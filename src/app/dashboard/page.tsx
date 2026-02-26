@@ -333,6 +333,131 @@ function buildPublicShareUrl(shareSlug: string): string {
   return `${window.location.origin}/shared/${shareSlug}`;
 }
 
+function getGraphEndpointId(endpoint: unknown): string | null {
+  if (typeof endpoint === "string") return endpoint;
+  if (!endpoint || typeof endpoint !== "object") return null;
+  const id = (endpoint as { id?: unknown }).id;
+  return typeof id === "string" ? id : null;
+}
+
+function toSafeFilenameSegment(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "map";
+}
+
+function sanitizeBibtexValue(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/{/g, "\\{")
+    .replace(/}/g, "\\}")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildBibtexKey(prefix: string, title: string, index: number): string {
+  const titlePart = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 28);
+  return `${prefix}${titlePart || "source"}${index + 1}`;
+}
+
+function formatEvidenceAsBibtex(
+  source: EvidenceSource,
+  keyPrefix: string,
+  index: number
+): string {
+  const key = buildBibtexKey(keyPrefix, source.title, index);
+  const safeTitle = sanitizeBibtexValue(source.title);
+  const safeUrl = source.url.trim();
+  const safeAuthors = source.authors
+    .map((author) => sanitizeBibtexValue(author))
+    .filter((author) => author.length > 0);
+  const safeJournal = source.journal.trim();
+  const safeReason = source.reason.trim();
+
+  const lines: string[] = [
+    `@misc{${key},`,
+    `  title = {${safeTitle}},`,
+  ];
+
+  if (safeAuthors.length > 0) {
+    lines.push(`  author = {${safeAuthors.join(" and ")}},`);
+  }
+  if (typeof source.year === "number" && Number.isFinite(source.year)) {
+    lines.push(`  year = {${Math.trunc(source.year)}},`);
+  }
+  if (safeJournal) {
+    lines.push(`  note = {Venue: ${sanitizeBibtexValue(safeJournal)}},`);
+  }
+  lines.push(`  howpublished = {\\url{${safeUrl}}},`);
+  if (safeReason) {
+    lines.push(`  annote = {${sanitizeBibtexValue(safeReason)}},`);
+  }
+  lines.push("}");
+
+  return lines.join("\n");
+}
+
+function buildNodeExportBlock(
+  interest: Interest,
+  evidence: EvidenceSource[],
+  nodeIndex: number
+): string {
+  const bibtexText =
+    evidence.length > 0
+      ? evidence
+          .map((source, sourceIndex) =>
+            formatEvidenceAsBibtex(
+              source,
+              `node${nodeIndex + 1}`,
+              sourceIndex
+            )
+          )
+          .join("\n\n")
+      : "No bibtex items";
+
+  return [
+    "Node Name",
+    interest.name,
+    bibtexText,
+    "Notes on node",
+    interest.notes.trim() || "None",
+  ].join("\n");
+}
+
+function buildEdgeExportBlock(
+  edgeName: string,
+  evidence: EvidenceSource[],
+  notes: string,
+  edgeIndex: number
+): string {
+  const bibtexText =
+    evidence.length > 0
+      ? evidence
+          .map((source, sourceIndex) =>
+            formatEvidenceAsBibtex(
+              source,
+              `edge${edgeIndex + 1}`,
+              sourceIndex
+            )
+          )
+          .join("\n\n")
+      : "No bibtex items";
+
+  return [
+    "Edge Name",
+    edgeName,
+    bibtexText,
+    "Notes on edge",
+    notes.trim() || "None",
+  ].join("\n");
+}
+
 export default function DashboardPage() {
   const [maps, setMaps] = useState<KnowledgeMap[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
@@ -355,6 +480,9 @@ export default function DashboardPage() {
   const [shareActionLoading, setShareActionLoading] = useState(false);
   const [shareError, setShareError] = useState("");
   const [shareFeedback, setShareFeedback] = useState("");
+  const [mapExportLoading, setMapExportLoading] = useState(false);
+  const [mapExportError, setMapExportError] = useState("");
+  const [mapExportFeedback, setMapExportFeedback] = useState("");
 
   const [selectedTopic, setSelectedTopic] = useState<{
     id: string;
@@ -573,6 +701,11 @@ export default function DashboardPage() {
   useEffect(() => {
     setShareError("");
     setShareFeedback("");
+  }, [selectedMapId]);
+
+  useEffect(() => {
+    setMapExportError("");
+    setMapExportFeedback("");
   }, [selectedMapId]);
 
   useEffect(() => {
@@ -1221,6 +1354,177 @@ export default function DashboardPage() {
       setShareFeedback("Share link copied.");
     } catch {
       setShareError("Failed to copy share link");
+    }
+  }
+
+  async function handleDownloadMapExport() {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) {
+      setMapExportError("Select a specific map to download an export.");
+      return;
+    }
+
+    if (interests.length === 0) {
+      setMapExportError("No nodes to export in this map.");
+      return;
+    }
+
+    setMapExportLoading(true);
+    setMapExportError("");
+    setMapExportFeedback("");
+
+    try {
+      const mapId = selectedMapId;
+      const selectedMapName = selectedMap?.name || "map";
+      let hasPartialFailures = false;
+
+      const nodeEvidenceResults = await Promise.allSettled(
+        interests.map(async (interest) => {
+          const params = new URLSearchParams({
+            mapId,
+            interestId: interest.id,
+          });
+          const res = await fetch(`/api/interests/evidence?${params.toString()}`);
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "Failed to load node evidence");
+          }
+          const data: SavedInterestEvidence[] = await res.json();
+          return data;
+        })
+      );
+
+      const nodeBlocks = interests.map((interest, index) => {
+        const result = nodeEvidenceResults[index];
+        if (result.status === "fulfilled") {
+          return buildNodeExportBlock(interest, result.value, index);
+        }
+        hasPartialFailures = true;
+        return buildNodeExportBlock(interest, [], index);
+      });
+
+      const interestNameById = new Map<string, string>();
+      for (const interest of interests) {
+        interestNameById.set(interest.id, interest.name);
+      }
+
+      const uniqueEdges = new Map<
+        string,
+        {
+          sourceId: string;
+          targetId: string;
+          sourceName: string;
+          targetName: string;
+        }
+      >();
+
+      for (const link of graphData.links) {
+        const sourceId = getGraphEndpointId(link.source as unknown);
+        const targetId = getGraphEndpointId(link.target as unknown);
+        if (!sourceId || !targetId || sourceId === targetId) continue;
+
+        const pair = normalizeEdgePair(sourceId, targetId);
+        const key = `${pair.a}::${pair.b}`;
+        if (uniqueEdges.has(key)) continue;
+
+        uniqueEdges.set(key, {
+          sourceId: pair.a,
+          targetId: pair.b,
+          sourceName: interestNameById.get(pair.a) || pair.a,
+          targetName: interestNameById.get(pair.b) || pair.b,
+        });
+      }
+
+      const edgeEntries = Array.from(uniqueEdges.values()).sort((a, b) => {
+        const sourceCompare = a.sourceName.localeCompare(b.sourceName);
+        if (sourceCompare !== 0) return sourceCompare;
+        return a.targetName.localeCompare(b.targetName);
+      });
+
+      const edgeResults = await Promise.allSettled(
+        edgeEntries.map(async (edge) => {
+          const params = new URLSearchParams({
+            mapId,
+            interestAId: edge.sourceId,
+            interestBId: edge.targetId,
+          });
+
+          const [evidenceRes, notesRes] = await Promise.all([
+            fetch(`/api/edges/evidence?${params.toString()}`),
+            fetch(`/api/edges/notes?${params.toString()}`),
+          ]);
+
+          if (!evidenceRes.ok) {
+            const data = await evidenceRes.json().catch(() => ({}));
+            throw new Error(data.error || "Failed to load edge evidence");
+          }
+
+          if (!notesRes.ok) {
+            const data = await notesRes.json().catch(() => ({}));
+            throw new Error(data.error || "Failed to load edge notes");
+          }
+
+          const evidence: SavedEdgeEvidence[] = await evidenceRes.json();
+          const notesData: EdgeNotesRecord = await notesRes.json();
+          return {
+            evidence,
+            notes: notesData.notes || "",
+          };
+        })
+      );
+
+      const edgeBlocks = edgeEntries.map((edge, index) => {
+        const result = edgeResults[index];
+        const edgeName = `${edge.sourceName} <-> ${edge.targetName}`;
+        if (result.status === "fulfilled") {
+          return buildEdgeExportBlock(
+            edgeName,
+            result.value.evidence,
+            result.value.notes,
+            index
+          );
+        }
+        hasPartialFailures = true;
+        return buildEdgeExportBlock(edgeName, [], "", index);
+      });
+
+      const output = [
+        "KnowledgeMap Export",
+        `Map: ${selectedMapName}`,
+        `Generated: ${new Date().toISOString()}`,
+        "",
+        "Nodes",
+        "",
+        nodeBlocks.join("\n\n"),
+        "",
+        "Edges",
+        "",
+        edgeBlocks.length > 0 ? edgeBlocks.join("\n\n") : "No edges in current graph.",
+        "",
+      ].join("\n");
+
+      const filename = `${toSafeFilenameSegment(
+        selectedMapName
+      )}-export-${new Date().toISOString().slice(0, 10)}.txt`;
+      const blob = new Blob([output], { type: "text/plain;charset=utf-8" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setMapExportFeedback(
+        hasPartialFailures
+          ? "Downloaded with partial data (some evidence/notes could not be loaded)."
+          : "Map export downloaded."
+      );
+    } catch (err) {
+      console.error("Failed to download map export:", err);
+      setMapExportError("Failed to generate map export.");
+    } finally {
+      setMapExportLoading(false);
     }
   }
 
@@ -1974,6 +2278,18 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
+              <button
+                onClick={handleDownloadMapExport}
+                disabled={
+                  !selectedMapId ||
+                  isCombinedMapSelected ||
+                  mapExportLoading ||
+                  interests.length === 0
+                }
+                className="px-2.5 py-1.5 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {mapExportLoading ? "Preparing..." : "Download .txt"}
+              </button>
 
               <input
                 type="text"
@@ -1991,6 +2307,17 @@ export default function DashboardPage() {
 	              </button>
 	            </div>
 	          </div>
+
+          {(mapExportFeedback || mapExportError) && (
+            <div className="mb-2 text-xs space-x-2">
+              {mapExportFeedback && (
+                <span className="text-green-300">{mapExportFeedback}</span>
+              )}
+              {mapExportError && (
+                <span className="text-red-300">{mapExportError}</span>
+              )}
+            </div>
+          )}
 
 	          {selectedMapId && !isCombinedMapSelected && (
 	            <div className="flex flex-wrap items-center gap-2 mb-2">

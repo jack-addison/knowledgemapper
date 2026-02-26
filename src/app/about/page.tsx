@@ -7,6 +7,7 @@ const workflowSteps = [
   "Use Advanced layout controls (Similarity, Cluster, Link pull) to reduce noise.",
   "Open nodes to gather topic papers, learning links, and persistent notes.",
   "Open edges to inspect relationship explanations, linking papers, and edge notes.",
+  "Use Download .txt beside the map selector to export node/edge evidence and notes for writing workflows.",
   "Share a map with a read-only public link when you want feedback.",
 ];
 
@@ -38,6 +39,15 @@ const featureGroups = [
       "Recipients can view notes and saved papers",
       "Recipients can open learning links and load evidence",
       "Recipients cannot save, edit, or modify map data",
+    ],
+  },
+  {
+    title: "Export",
+    items: [
+      "Per-map Download .txt export in the dashboard header",
+      "Includes every node with BibTeX-style entries + node notes",
+      "Includes every edge with BibTeX-style entries + edge notes",
+      "Structured for easy copy into LaTeX/BibTeX writing pipelines",
     ],
   },
 ];
@@ -150,6 +160,7 @@ export default function AboutPage() {
           <p className="text-gray-400 leading-relaxed">
             Your maps, topics, notes, and saved evidence are tied to your account.
             Shared links are read-only and should be enabled intentionally per map.
+            Exported `.txt` files are generated client-side from your current map data.
           </p>
           <p className="text-gray-500 text-sm">
             Evidence suggestions are a starting point. Verify relevance and quality
