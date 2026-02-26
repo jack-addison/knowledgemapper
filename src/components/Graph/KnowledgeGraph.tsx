@@ -35,10 +35,108 @@ function getEndpointId(endpoint: unknown): string | null {
   return typeof id === "string" ? id : null;
 }
 
+function buildNodeAnchors(data: GraphData): {
+  anchors: Map<string, { x: number; y: number }>;
+  strengths: Map<string, number>;
+} {
+  const clusters = new Map<number, string[]>();
+  for (const node of data.nodes) {
+    const ids = clusters.get(node.cluster) || [];
+    ids.push(node.id);
+    clusters.set(node.cluster, ids);
+  }
+
+  const clusterSpecs = Array.from(clusters.entries())
+    .map(([clusterId, ids]) => ({
+      clusterId,
+      ids,
+      radius: Math.max(85, Math.sqrt(ids.length) * 52),
+    }))
+    .sort((a, b) => b.radius - a.radius);
+
+  const centersByCluster = new Map<number, { x: number; y: number }>();
+  const placed: Array<{ x: number; y: number; radius: number }> = [];
+  const gap = 28;
+
+  for (let i = 0; i < clusterSpecs.length; i++) {
+    const cluster = clusterSpecs[i];
+    if (i === 0) {
+      centersByCluster.set(cluster.clusterId, { x: 0, y: 0 });
+      placed.push({ x: 0, y: 0, radius: cluster.radius });
+      continue;
+    }
+
+    let chosen = { x: 0, y: 0 };
+    let found = false;
+
+    // Spiral search for nearest non-overlapping cluster center.
+    for (let attempt = 0; attempt < 1600; attempt++) {
+      const theta = attempt * 0.5;
+      const spiralR = 105 + attempt * 4.8;
+      const x = Math.cos(theta) * spiralR;
+      const y = Math.sin(theta) * spiralR;
+
+      const overlaps = placed.some((item) => {
+        const dx = x - item.x;
+        const dy = y - item.y;
+        return Math.hypot(dx, dy) < cluster.radius + item.radius + gap;
+      });
+
+      if (!overlaps) {
+        chosen = { x, y };
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      chosen = { x: i * 130, y: 0 };
+    }
+
+    centersByCluster.set(cluster.clusterId, chosen);
+    placed.push({ ...chosen, radius: cluster.radius });
+  }
+
+  const anchors = new Map<string, { x: number; y: number }>();
+  const strengths = new Map<string, number>();
+
+  for (const { clusterId, ids } of clusterSpecs) {
+    const center = centersByCluster.get(clusterId) || { x: 0, y: 0 };
+    const sortedIds = [...ids].sort();
+    const clusterStrength = Math.max(
+      0.12,
+      Math.min(0.2, 0.12 + Math.log2(sortedIds.length + 1) * 0.015)
+    );
+    const nodeSpacing = 24;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+    // Give each node a compact anchor around the cluster center.
+    // This keeps same-cluster nodes together even when links are sparse.
+    for (let i = 0; i < sortedIds.length; i++) {
+      const id = sortedIds[i];
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (i > 0) {
+        const angle = i * goldenAngle;
+        const radius = nodeSpacing * Math.sqrt(i);
+        offsetX = Math.cos(angle) * radius;
+        offsetY = Math.sin(angle) * radius;
+      }
+
+      anchors.set(id, { x: center.x + offsetX, y: center.y + offsetY });
+      strengths.set(id, clusterStrength);
+    }
+  }
+
+  return { anchors, strengths };
+}
+
 interface KnowledgeGraphProps {
   data: GraphData;
   selectedNodeId?: string | null;
   connectingFromName?: string | null;
+  linkForceScale?: number;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onBackgroundClick?: () => void;
   reservedWidth?: number;
@@ -48,14 +146,18 @@ export default function KnowledgeGraph({
   data,
   selectedNodeId,
   connectingFromName,
+  linkForceScale = 1,
   onNodeClick,
   onBackgroundClick,
   reservedWidth,
 }: KnowledgeGraphProps) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+  const containerRef = useRef<HTMLDivElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
   const [forcesApplied, setForcesApplied] = useState(0);
+  const nodeAnchorLayout = useMemo(() => buildNodeAnchors(data), [data]);
+  const safeLinkForceScale = Math.max(0.1, Math.min(4, linkForceScale));
 
   // Apply forces — retry until the ref is populated (dynamic import delay)
   useEffect(() => {
@@ -65,39 +167,61 @@ export default function KnowledgeGraph({
       return () => clearTimeout(timer);
     }
 
-    fg.d3Force("charge", d3.forceManyBody().strength(-300).distanceMax(400));
-    fg.d3Force("collision", d3.forceCollide(40));
-    fg.d3Force("center", d3.forceCenter().strength(0.05));
+    fg.d3Force("charge", d3.forceManyBody().strength(-320).distanceMax(550));
+    fg.d3Force("collision", d3.forceCollide(34).strength(1).iterations(2));
+    fg.d3Force("center", d3.forceCenter(0, 0).strength(0.015));
 
-    // Pull all nodes toward center — keeps disconnected components nearby
-    fg.d3Force("x", d3.forceX(0).strength(0.08));
-    fg.d3Force("y", d3.forceY(0).strength(0.08));
+    // Pull nodes toward their cluster anchor so bridged mega-components stay readable.
+    fg.d3Force(
+      "x",
+      d3
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .forceX((node: any) => nodeAnchorLayout.anchors.get(node.id)?.x ?? 0)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .strength((node: any) => nodeAnchorLayout.strengths.get(node.id) ?? 0.09)
+    );
+    fg.d3Force(
+      "y",
+      d3
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .forceY((node: any) => nodeAnchorLayout.anchors.get(node.id)?.y ?? 0)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .strength((node: any) => nodeAnchorLayout.strengths.get(node.id) ?? 0.09)
+    );
 
     const linkForce = fg.d3Force("link");
     if (linkForce) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       linkForce.distance((link: any) => {
         const sim = link.similarity || 0.3;
-        return 250 - sim * 180;
+        return 300 - sim * 210;
       });
-      linkForce.strength(0.4);
+      // Weaker low-similarity edges reduce large-cluster tangling.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      linkForce.strength((link: any) => {
+        const sim = link.similarity || 0.3;
+        return (0.12 + sim * 0.45) * safeLinkForceScale;
+      });
     }
 
     fg.d3ReheatSimulation();
-  }, [data, forcesApplied]);
+  }, [data, forcesApplied, nodeAnchorLayout, safeLinkForceScale]);
 
   useEffect(() => {
     function handleResize() {
-      const sidebar = reservedWidth ?? (selectedNodeId ? 288 + 16 : 0);
+      const sidebar = reservedWidth ?? 0;
+      const containerWidth =
+        containerRef.current?.clientWidth ??
+        Math.min(window.innerWidth - 32, 1800);
       setDimensions({
-        width: Math.max(Math.min(window.innerWidth - 48, 1200) - sidebar, 320),
-        height: Math.max(window.innerHeight - 220, 500),
+        width: Math.max(containerWidth - sidebar, 320),
+        height: Math.max(window.innerHeight - 200, 560),
       });
     }
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [selectedNodeId, reservedWidth]);
+  }, [reservedWidth]);
 
   // Build a quick lookup: nodeId -> cluster color
   const nodeColorMap = useMemo(() => {
@@ -300,7 +424,11 @@ export default function KnowledgeGraph({
   }
 
   return (
-    <div className="border border-gray-800 rounded-lg overflow-hidden" style={{ background: "radial-gradient(ellipse at center, #0f172a 0%, #030712 100%)" }}>
+    <div
+      ref={containerRef}
+      className="border border-gray-800 rounded-lg overflow-hidden"
+      style={{ background: "radial-gradient(ellipse at center, #0f172a 0%, #030712 100%)" }}
+    >
       <ForceGraph2D
         ref={graphRef}
         graphData={data}

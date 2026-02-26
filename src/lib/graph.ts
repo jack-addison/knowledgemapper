@@ -12,8 +12,13 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-const DEFAULT_SIMILARITY_THRESHOLD = 0.2;
-const CLUSTER_THRESHOLD = 0.35; // Higher threshold for same-cluster grouping
+export const DEFAULT_SIMILARITY_THRESHOLD = 0.34;
+export const DEFAULT_CLUSTER_THRESHOLD = 0.42; // Higher threshold for same-cluster grouping
+
+interface BuildGraphOptions {
+  similarityThreshold?: number;
+  clusterThreshold?: number;
+}
 
 // Union-Find for clustering
 function createUnionFind(n: number) {
@@ -42,8 +47,14 @@ function createUnionFind(n: number) {
   return { find, union };
 }
 
-export function buildGraph(interests: Interest[], threshold?: number): GraphData {
-  const simThreshold = threshold ?? DEFAULT_SIMILARITY_THRESHOLD;
+export function buildGraph(
+  interests: Interest[],
+  options?: BuildGraphOptions
+): GraphData {
+  const simThreshold =
+    options?.similarityThreshold ?? DEFAULT_SIMILARITY_THRESHOLD;
+  const clusterThreshold =
+    options?.clusterThreshold ?? DEFAULT_CLUSTER_THRESHOLD;
   const links: GraphData["links"] = [];
   const uf = createUnionFind(interests.length);
 
@@ -65,7 +76,7 @@ export function buildGraph(interests: Interest[], threshold?: number): GraphData
       }
 
       // Group into same cluster if strongly related
-      if (similarity >= CLUSTER_THRESHOLD) {
+      if (similarity >= clusterThreshold) {
         uf.union(i, j);
       }
     }

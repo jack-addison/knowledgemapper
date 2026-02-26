@@ -7,7 +7,24 @@ import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
 import TopicDetail from "@/components/TopicDetail/TopicDetail";
 import NotesSidebar from "@/components/NotesSidebar/NotesSidebar";
 import { Interest, GraphData } from "@/lib/types";
-import { buildGraph } from "@/lib/graph";
+import {
+  buildGraph,
+  DEFAULT_CLUSTER_THRESHOLD,
+  DEFAULT_SIMILARITY_THRESHOLD,
+} from "@/lib/graph";
+
+const DEFAULT_LINK_FORCE_SCALE = 3;
+
+function getStoredNumber(
+  key: string,
+  fallback: number
+): number {
+  if (typeof window === "undefined") return fallback;
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const parsed = parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 export default function DashboardPage() {
   const [interests, setInterests] = useState<Interest[]>([]);
@@ -26,13 +43,15 @@ export default function DashboardPage() {
     id: string;
     name: string;
   } | null>(null);
-  const [threshold, setThreshold] = useState(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("km-similarity-threshold");
-      if (saved) return parseFloat(saved);
-    }
-    return 0.2;
-  });
+  const [threshold, setThreshold] = useState(() =>
+    getStoredNumber("km-similarity-threshold", DEFAULT_SIMILARITY_THRESHOLD)
+  );
+  const [clusterThreshold, setClusterThreshold] = useState(() =>
+    getStoredNumber("km-cluster-threshold", DEFAULT_CLUSTER_THRESHOLD)
+  );
+  const [linkForceScale, setLinkForceScale] = useState(() =>
+    getStoredNumber("km-link-force-scale", DEFAULT_LINK_FORCE_SCALE)
+  );
 
   // Connection mode state
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
@@ -43,8 +62,13 @@ export default function DashboardPage() {
   const [connectingLoading, setConnectingLoading] = useState(false);
 
   const rebuildGraph = useCallback(
-    (data: Interest[], t: number) => {
-      setGraphData(buildGraph(data, t));
+    (data: Interest[], similarity: number, cluster: number) => {
+      setGraphData(
+        buildGraph(data, {
+          similarityThreshold: similarity,
+          clusterThreshold: cluster,
+        })
+      );
     },
     []
   );
@@ -55,14 +79,14 @@ export default function DashboardPage() {
       if (res.ok) {
         const data = await res.json();
         setInterests(data);
-        rebuildGraph(data, threshold);
+        rebuildGraph(data, threshold, clusterThreshold);
       }
     } catch (err) {
       console.error("Failed to fetch interests:", err);
     } finally {
       setInitialLoading(false);
     }
-  }, [rebuildGraph, threshold]);
+  }, [rebuildGraph, threshold, clusterThreshold]);
 
   useEffect(() => {
     fetchInterests();
@@ -79,7 +103,18 @@ export default function DashboardPage() {
   function handleThresholdChange(value: number) {
     setThreshold(value);
     localStorage.setItem("km-similarity-threshold", value.toString());
-    rebuildGraph(interests, value);
+    rebuildGraph(interests, value, clusterThreshold);
+  }
+
+  function handleClusterThresholdChange(value: number) {
+    setClusterThreshold(value);
+    localStorage.setItem("km-cluster-threshold", value.toString());
+    rebuildGraph(interests, threshold, value);
+  }
+
+  function handleLinkForceScaleChange(value: number) {
+    setLinkForceScale(value);
+    localStorage.setItem("km-link-force-scale", value.toString());
   }
 
   async function handleAddInterest(name: string) {
@@ -214,11 +249,6 @@ export default function DashboardPage() {
 
   const showTopicDetail = Boolean(selectedTopic && !connectingFrom);
   const showNotesSidebar = Boolean(notesTopic && !connectingFrom);
-  const reservedWidth =
-    (showTopicDetail ? 288 : 0) +
-    (showNotesSidebar ? 320 : 0) +
-    (showTopicDetail ? 16 : 0) +
-    (showNotesSidebar ? 16 : 0);
 
   if (initialLoading) {
     return (
@@ -234,7 +264,7 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
-      <div className="flex-1 px-4 py-3 space-y-3 max-w-[1400px] mx-auto w-full">
+      <div className="flex-1 px-4 py-3 space-y-3 max-w-[1800px] mx-auto w-full">
         {/* Compact top bar: title + interest picker */}
         <div>
           <div className="flex items-center justify-between mb-2">
@@ -249,7 +279,6 @@ export default function DashboardPage() {
           <InterestPicker
             interests={interests.map((i) => i.name)}
             onAdd={handleAddInterest}
-            onRemove={handleRemoveInterest}
             loading={loading}
           />
         </div>
@@ -271,7 +300,63 @@ export default function DashboardPage() {
           <span className="text-xs text-gray-500 font-mono w-8">
             {threshold.toFixed(2)}
           </span>
+          <span className="text-xs text-gray-500">
+            Higher means only stronger topic similarities create links.
+          </span>
         </div>
+
+        {/* Advanced graph controls */}
+        <details className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2">
+          <summary className="text-xs text-gray-400 cursor-pointer select-none">
+            Advanced layout
+          </summary>
+          <div className="space-y-2 mt-3">
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-gray-400 whitespace-nowrap w-24">
+                Cluster
+              </label>
+              <input
+                type="range"
+                min={0.2}
+                max={0.7}
+                step={0.01}
+                value={clusterThreshold}
+                onChange={(e) =>
+                  handleClusterThresholdChange(parseFloat(e.target.value))
+                }
+                className="w-48 h-1 accent-emerald-500"
+              />
+              <span className="text-xs text-gray-500 font-mono w-8">
+                {clusterThreshold.toFixed(2)}
+              </span>
+              <span className="text-xs text-gray-500">
+                Higher means fewer, tighter color-grouped clusters.
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-gray-400 whitespace-nowrap w-24">
+                Link pull
+              </label>
+              <input
+                type="range"
+                min={0.5}
+                max={3}
+                step={0.05}
+                value={linkForceScale}
+                onChange={(e) =>
+                  handleLinkForceScaleChange(parseFloat(e.target.value))
+                }
+                className="w-48 h-1 accent-purple-500"
+              />
+              <span className="text-xs text-gray-500 font-mono w-8">
+                {linkForceScale.toFixed(2)}
+              </span>
+              <span className="text-xs text-gray-500">
+                Higher makes connected nodes pull toward each other more.
+              </span>
+            </div>
+          </div>
+        </details>
 
         {/* Connection mode banner */}
         {connectingFrom && (
@@ -314,24 +399,23 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Graph + optional side panel */}
-        <div className="flex gap-4 flex-1 min-h-0">
-          <div className="flex-1 min-w-0">
-            <KnowledgeGraph
-              data={graphData}
-              selectedNodeId={selectedTopic?.id}
-              connectingFromName={connectingFrom}
-              onNodeClick={handleNodeClick}
-              onBackgroundClick={() => {
-                setSelectedTopic(null);
-                setNotesTopic(null);
-              }}
-              reservedWidth={reservedWidth}
-            />
-          </div>
+        {/* Graph + floating side panel */}
+        <div className="relative flex-1 min-h-0">
+          <KnowledgeGraph
+            data={graphData}
+            selectedNodeId={selectedTopic?.id}
+            connectingFromName={connectingFrom}
+            linkForceScale={linkForceScale}
+            onNodeClick={handleNodeClick}
+            onBackgroundClick={() => {
+              setSelectedTopic(null);
+              setNotesTopic(null);
+            }}
+            reservedWidth={0}
+          />
 
           {showTopicDetail && selectedTopic && (
-            <div className="w-72 flex-shrink-0">
+            <div className="absolute top-3 right-3 w-72 z-20 max-h-[calc(100%-1.5rem)] overflow-y-auto">
               <TopicDetail
                 key={selectedTopic.id}
                 name={selectedTopic.name}
@@ -355,7 +439,7 @@ export default function DashboardPage() {
           )}
 
           {showNotesSidebar && notesTopic && (
-            <div className="w-80 flex-shrink-0">
+            <div className="absolute top-3 right-3 w-80 z-20 max-h-[calc(100%-1.5rem)] overflow-y-auto">
               <NotesSidebar
                 topicName={notesTopic.name}
                 initialNotes={
