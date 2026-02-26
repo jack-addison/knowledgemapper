@@ -167,9 +167,52 @@ export default function KnowledgeGraph({
   const containerRef = useRef<HTMLDivElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
+  const [clusterOffsetState, setClusterOffsetState] = useState<{
+    signature: string;
+    offsets: Record<number, { x: number; y: number }>;
+  }>({
+    signature: "",
+    offsets: {},
+  });
   const [forcesApplied, setForcesApplied] = useState(0);
-  const nodeAnchorLayout = useMemo(() => buildNodeAnchors(data), [data]);
+  const clusterSignature = useMemo(
+    () => data.nodes.map((node) => `${node.id}:${node.cluster}`).sort().join("|"),
+    [data.nodes]
+  );
+  const clusterOffsets = useMemo(
+    () =>
+      clusterOffsetState.signature === clusterSignature
+        ? clusterOffsetState.offsets
+        : {},
+    [clusterOffsetState, clusterSignature]
+  );
+  const nodeAnchorLayout = useMemo(() => {
+    const layout = buildNodeAnchors(data);
+    if (Object.keys(clusterOffsets).length === 0) {
+      return layout;
+    }
+
+    for (const node of data.nodes) {
+      const offset = clusterOffsets[node.cluster];
+      if (!offset) continue;
+      const existing = layout.anchors.get(node.id);
+      if (!existing) continue;
+      layout.anchors.set(node.id, {
+        x: existing.x + offset.x,
+        y: existing.y + offset.y,
+      });
+    }
+
+    return layout;
+  }, [data, clusterOffsets]);
   const safeLinkForceScale = Math.max(0.1, Math.min(4, linkForceScale));
+  const nodeClusterMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const node of data.nodes) {
+      map.set(node.id, node.cluster);
+    }
+    return map;
+  }, [data.nodes]);
 
   // Apply forces — retry until the ref is populated (dynamic import delay)
   useEffect(() => {
@@ -448,6 +491,45 @@ export default function KnowledgeGraph({
   }, [onNodeClick]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleNodeDragEnd = useCallback((node: any) => {
+    const nodeId = typeof node?.id === "string" ? node.id : null;
+    if (!nodeId) return;
+
+    const clusterId = nodeClusterMap.get(nodeId);
+    if (clusterId === undefined) return;
+
+    const anchor = nodeAnchorLayout.anchors.get(nodeId);
+    const nodeX = typeof node?.x === "number" ? node.x : null;
+    const nodeY = typeof node?.y === "number" ? node.y : null;
+    if (!anchor || nodeX === null || nodeY === null) return;
+
+    const deltaX = nodeX - anchor.x;
+    const deltaY = nodeY - anchor.y;
+    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+
+    setClusterOffsetState((prev) => {
+      const activeOffsets =
+        prev.signature === clusterSignature ? prev.offsets : {};
+      const current = activeOffsets[clusterId] || { x: 0, y: 0 };
+      return {
+        signature: clusterSignature,
+        offsets: {
+          ...activeOffsets,
+          [clusterId]: {
+            x: current.x + deltaX,
+            y: current.y + deltaY,
+          },
+        },
+      };
+    });
+
+    if (typeof node === "object" && node) {
+      node.fx = undefined;
+      node.fy = undefined;
+    }
+  }, [nodeAnchorLayout.anchors, nodeClusterMap, clusterSignature]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleLinkClick = useCallback((link: any) => {
     if (!onLinkClick) return;
     const sourceId = getEndpointId(link?.source);
@@ -500,6 +582,7 @@ export default function KnowledgeGraph({
         nodeCanvasObject={nodeCanvasObject}
         linkCanvasObject={linkCanvasObject}
         onNodeClick={handleNodeClick}
+        onNodeDragEnd={handleNodeDragEnd}
         onLinkClick={handleLinkClick}
         onBackgroundClick={handleBackgroundClick}
         backgroundColor="rgba(0,0,0,0)"
