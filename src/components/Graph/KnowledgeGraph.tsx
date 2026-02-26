@@ -62,7 +62,9 @@ function buildNodeAnchors(data: GraphData): {
 
   const centersByCluster = new Map<number, { x: number; y: number }>();
   const placed: Array<{ x: number; y: number; radius: number }> = [];
-  const gap = 28;
+  const gap = 56;
+  const spiralBaseRadius = 150;
+  const spiralGrowthRate = 6.8;
 
   for (let i = 0; i < clusterSpecs.length; i++) {
     const cluster = clusterSpecs[i];
@@ -78,7 +80,7 @@ function buildNodeAnchors(data: GraphData): {
     // Spiral search for nearest non-overlapping cluster center.
     for (let attempt = 0; attempt < 1600; attempt++) {
       const theta = attempt * 0.5;
-      const spiralR = 105 + attempt * 4.8;
+      const spiralR = spiralBaseRadius + attempt * spiralGrowthRate;
       const x = Math.cos(theta) * spiralR;
       const y = Math.sin(theta) * spiralR;
 
@@ -96,7 +98,7 @@ function buildNodeAnchors(data: GraphData): {
     }
 
     if (!found) {
-      chosen = { x: i * 130, y: 0 };
+      chosen = { x: i * 220, y: 0 };
     }
 
     centersByCluster.set(cluster.clusterId, chosen);

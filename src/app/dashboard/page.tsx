@@ -16,6 +16,7 @@ import {
   KnowledgeMap,
   SavedEdgeEvidence,
   SavedInterestEvidence,
+  TdaMapHealth,
   TopicEvidence,
 } from "@/lib/types";
 import {
@@ -135,6 +136,18 @@ function getStoredString(key: string, fallback: string): string {
   return localStorage.getItem(key) ?? fallback;
 }
 
+function normalizePaperUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function buildPublicShareUrl(shareSlug: string): string {
+  if (typeof window === "undefined") return `/shared/${shareSlug}`;
+  return `${window.location.origin}/shared/${shareSlug}`;
+}
+
 export default function DashboardPage() {
   const [maps, setMaps] = useState<KnowledgeMap[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
@@ -151,6 +164,9 @@ export default function DashboardPage() {
   const [mapsLoading, setMapsLoading] = useState(true);
   const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError] = useState("");
+  const [shareActionLoading, setShareActionLoading] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const [shareFeedback, setShareFeedback] = useState("");
 
   const [selectedTopic, setSelectedTopic] = useState<{
     id: string;
@@ -188,6 +204,14 @@ export default function DashboardPage() {
   const [savedEdgeEvidenceError, setSavedEdgeEvidenceError] = useState("");
   const [savingEvidenceUrl, setSavingEvidenceUrl] = useState<string | null>(null);
   const [deletingEvidenceId, setDeletingEvidenceId] = useState<string | null>(null);
+  const [manualEdgeEvidenceTitle, setManualEdgeEvidenceTitle] = useState("");
+  const [manualEdgeEvidenceUrl, setManualEdgeEvidenceUrl] = useState("");
+  const [manualEdgeEvidenceYear, setManualEdgeEvidenceYear] = useState("");
+  const [manualEdgeEvidenceJournal, setManualEdgeEvidenceJournal] = useState("");
+  const [manualEdgeEvidenceAuthors, setManualEdgeEvidenceAuthors] = useState("");
+  const [manualEdgeEvidenceReason, setManualEdgeEvidenceReason] = useState("");
+  const [manualEdgeEvidenceError, setManualEdgeEvidenceError] = useState("");
+  const [manualEdgeEvidenceSaving, setManualEdgeEvidenceSaving] = useState(false);
   const [edgeNotes, setEdgeNotes] = useState("");
   const [edgeNotesLoading, setEdgeNotesLoading] = useState(false);
   const [edgeNotesSaving, setEdgeNotesSaving] = useState(false);
@@ -201,6 +225,9 @@ export default function DashboardPage() {
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
   const [linkForceScale, setLinkForceScale] = useState(DEFAULT_LINK_FORCE_SCALE);
+  const [tdaHealth, setTdaHealth] = useState<TdaMapHealth | null>(null);
+  const [tdaLoading, setTdaLoading] = useState(false);
+  const [tdaError, setTdaError] = useState("");
 
   // Connection mode state
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
@@ -301,10 +328,18 @@ export default function DashboardPage() {
   }, [selectedMapId]);
 
   useEffect(() => {
+    setShareError("");
+    setShareFeedback("");
+  }, [selectedMapId]);
+
+  useEffect(() => {
     if (!selectedMapId) {
       setThreshold(DEFAULT_SIMILARITY_THRESHOLD);
       setClusterThreshold(DEFAULT_CLUSTER_THRESHOLD);
       setLinkForceScale(DEFAULT_LINK_FORCE_SCALE);
+      setTdaHealth(null);
+      setTdaError("");
+      setTdaLoading(false);
       return;
     }
 
@@ -313,6 +348,56 @@ export default function DashboardPage() {
     setClusterThreshold(settings.clusterThreshold);
     setLinkForceScale(settings.linkForceScale);
   }, [selectedMapId]);
+
+  useEffect(() => {
+    if (!selectedMapId) {
+      setTdaHealth(null);
+      setTdaError("");
+      setTdaLoading(false);
+      return;
+    }
+
+    const activeMapId = selectedMapId;
+    let cancelled = false;
+
+    async function fetchTdaHealth() {
+      setTdaLoading(true);
+      setTdaError("");
+      try {
+        const res = await fetch(
+          `/api/tda/map-health?mapId=${encodeURIComponent(activeMapId)}`
+        );
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (!cancelled) {
+            setTdaHealth(null);
+            setTdaError(data.error || "Failed to analyze map topology");
+          }
+          return;
+        }
+
+        const data: TdaMapHealth = await res.json();
+        if (!cancelled) {
+          setTdaHealth(data);
+        }
+      } catch {
+        if (!cancelled) {
+          setTdaHealth(null);
+          setTdaError("Failed to analyze map topology");
+        }
+      } finally {
+        if (!cancelled) {
+          setTdaLoading(false);
+        }
+      }
+    }
+
+    fetchTdaHealth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMapId, interests]);
 
   useEffect(() => {
     if (mapsLoading) return;
@@ -335,7 +420,7 @@ export default function DashboardPage() {
   }, [interests, notesTopic]);
 
   useEffect(() => {
-    setTopicPanelExpanded(false);
+    setTopicPanelExpanded(Boolean(selectedTopic?.id));
   }, [selectedTopic?.id]);
 
   useEffect(() => {
@@ -405,8 +490,8 @@ export default function DashboardPage() {
   }, [interests, selectedLink]);
 
   useEffect(() => {
-    setEdgePanelExpanded(false);
-  }, [selectedLink?.sourceId, selectedLink?.targetId]);
+    setEdgePanelExpanded(Boolean(selectedLink));
+  }, [selectedLink]);
 
   useEffect(() => {
     setSelectedLinkEvidence(null);
@@ -417,6 +502,14 @@ export default function DashboardPage() {
     setSavedEdgeEvidenceLoading(false);
     setSavingEvidenceUrl(null);
     setDeletingEvidenceId(null);
+    setManualEdgeEvidenceTitle("");
+    setManualEdgeEvidenceUrl("");
+    setManualEdgeEvidenceYear("");
+    setManualEdgeEvidenceJournal("");
+    setManualEdgeEvidenceAuthors("");
+    setManualEdgeEvidenceReason("");
+    setManualEdgeEvidenceError("");
+    setManualEdgeEvidenceSaving(false);
     setEdgeNotes("");
     setEdgeNotesError("");
     setEdgeNotesLoading(false);
@@ -493,6 +586,26 @@ export default function DashboardPage() {
     };
   }, [selectedLink, selectedMapId]);
 
+  const applyRecommendedLayoutSettings = useCallback(
+    (similarity: number, cluster: number, linkForce: number) => {
+      const nextSimilarity = clampValue(similarity, 0.05, 0.6);
+      const nextCluster = clampValue(cluster, 0.2, 0.7);
+      const nextLinkForce = clampValue(linkForce, 0.5, 3);
+
+      setThreshold(nextSimilarity);
+      setClusterThreshold(nextCluster);
+      setLinkForceScale(nextLinkForce);
+      if (selectedMapId) {
+        saveMapLayoutSettings(selectedMapId, {
+          similarityThreshold: nextSimilarity,
+          clusterThreshold: nextCluster,
+          linkForceScale: nextLinkForce,
+        });
+      }
+    },
+    [selectedMapId]
+  );
+
   function handleThresholdChange(value: number) {
     setThreshold(value);
     if (selectedMapId) {
@@ -545,6 +658,115 @@ export default function DashboardPage() {
       setError("Failed to create map");
     } finally {
       setCreatingMap(false);
+    }
+  }
+
+  async function handleEnableSharing(regenerate = false) {
+    if (!selectedMapId) return;
+
+    setShareActionLoading(true);
+    setShareError("");
+    setShareFeedback("");
+    try {
+      const res = await fetch("/api/maps/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapId: selectedMapId, regenerate }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setShareError(data.error || "Failed to enable sharing");
+        return;
+      }
+
+      setMaps((prev) =>
+        prev.map((map) =>
+          map.id === selectedMapId
+            ? {
+                ...map,
+                is_public: data.isPublic,
+                share_slug: data.shareSlug,
+                shared_at: data.sharedAt,
+              }
+            : map
+        )
+      );
+
+      const shareUrl =
+        typeof data.shareUrl === "string" && data.shareUrl.length > 0
+          ? data.shareUrl
+          : data.shareSlug
+            ? buildPublicShareUrl(data.shareSlug)
+            : "";
+
+      let copied = false;
+      if (shareUrl && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(shareUrl);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+
+      setShareFeedback(copied ? "Share link copied." : "Sharing enabled.");
+    } catch {
+      setShareError("Failed to enable sharing");
+    } finally {
+      setShareActionLoading(false);
+    }
+  }
+
+  async function handleDisableSharing() {
+    if (!selectedMapId) return;
+
+    setShareActionLoading(true);
+    setShareError("");
+    setShareFeedback("");
+    try {
+      const res = await fetch("/api/maps/share", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapId: selectedMapId }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setShareError(data.error || "Failed to disable sharing");
+        return;
+      }
+
+      setMaps((prev) =>
+        prev.map((map) =>
+          map.id === selectedMapId
+            ? {
+                ...map,
+                is_public: false,
+                share_slug: null,
+                shared_at: null,
+              }
+            : map
+        )
+      );
+
+      setShareFeedback("Sharing disabled.");
+    } catch {
+      setShareError("Failed to disable sharing");
+    } finally {
+      setShareActionLoading(false);
+    }
+  }
+
+  async function handleCopyShareLink(shareSlug: string) {
+    const shareUrl = buildPublicShareUrl(shareSlug);
+    setShareError("");
+    setShareFeedback("");
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setShareFeedback("Share link copied.");
+    } catch {
+      setShareError("Failed to copy share link");
     }
   }
 
@@ -724,9 +946,11 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleSaveTopicEvidenceSource(source: EvidenceSource) {
+  async function handleSaveTopicEvidenceSource(
+    source: EvidenceSource
+  ): Promise<boolean> {
     const topicParams = getActiveTopicParams();
-    if (!topicParams) return;
+    if (!topicParams) return false;
 
     setSavingTopicEvidenceUrl(source.url);
     setSavedTopicEvidenceError("");
@@ -738,7 +962,11 @@ export default function DashboardPage() {
           ...topicParams,
           source: {
             ...source,
-            sourceProvider: "openalex",
+            sourceProvider:
+              typeof source.sourceProvider === "string" &&
+              source.sourceProvider.trim().length > 0
+                ? source.sourceProvider.trim()
+                : "openalex",
           },
         }),
       });
@@ -748,7 +976,7 @@ export default function DashboardPage() {
         setSavedTopicEvidenceError(
           data.error || "Failed to save topic evidence"
         );
-        return;
+        return false;
       }
 
       const saved: SavedInterestEvidence = await res.json();
@@ -759,8 +987,10 @@ export default function DashboardPage() {
         }
         return [saved, ...prev];
       });
+      return true;
     } catch {
       setSavedTopicEvidenceError("Failed to save topic evidence");
+      return false;
     } finally {
       setSavingTopicEvidenceUrl(null);
     }
@@ -840,9 +1070,9 @@ export default function DashboardPage() {
     };
   }
 
-  async function handleSaveEvidenceSource(source: EvidenceSource) {
+  async function handleSaveEvidenceSource(source: EvidenceSource): Promise<boolean> {
     const edgeParams = getActiveEdgeParams();
-    if (!edgeParams) return;
+    if (!edgeParams) return false;
 
     setSavingEvidenceUrl(source.url);
     setSavedEdgeEvidenceError("");
@@ -854,7 +1084,11 @@ export default function DashboardPage() {
           ...edgeParams,
           source: {
             ...source,
-            sourceProvider: "openalex",
+            sourceProvider:
+              typeof source.sourceProvider === "string" &&
+              source.sourceProvider.trim().length > 0
+                ? source.sourceProvider.trim()
+                : "openalex",
           },
         }),
       });
@@ -862,7 +1096,7 @@ export default function DashboardPage() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setSavedEdgeEvidenceError(data.error || "Failed to save evidence");
-        return;
+        return false;
       }
 
       const saved: SavedEdgeEvidence = await res.json();
@@ -873,11 +1107,69 @@ export default function DashboardPage() {
         }
         return [saved, ...prev];
       });
+      return true;
     } catch {
       setSavedEdgeEvidenceError("Failed to save evidence");
+      return false;
     } finally {
       setSavingEvidenceUrl(null);
     }
+  }
+
+  async function handleSaveManualEdgeEvidence() {
+    const title = manualEdgeEvidenceTitle.trim();
+    const url = normalizePaperUrl(manualEdgeEvidenceUrl);
+    if (!title || !url) {
+      setManualEdgeEvidenceError("Title and URL are required.");
+      return;
+    }
+
+    let year: number | null = null;
+    if (manualEdgeEvidenceYear.trim()) {
+      const parsedYear = Number(manualEdgeEvidenceYear.trim());
+      if (!Number.isFinite(parsedYear)) {
+        setManualEdgeEvidenceError("Year must be a valid number.");
+        return;
+      }
+      year = Math.trunc(parsedYear);
+    }
+
+    const authors = manualEdgeEvidenceAuthors
+      .split(",")
+      .map((author) => author.trim())
+      .filter((author) => author.length > 0)
+      .slice(0, 8);
+
+    const source: EvidenceSource = {
+      title,
+      url,
+      year,
+      journal: manualEdgeEvidenceJournal.trim() || "User provided source",
+      authors,
+      reason:
+        manualEdgeEvidenceReason.trim() ||
+        `User-added evidence for ${selectedLink?.sourceName || "this"} ↔ ${
+          selectedLink?.targetName || "connection"
+        }.`,
+      sourceProvider: "manual",
+    };
+
+    setManualEdgeEvidenceSaving(true);
+    setManualEdgeEvidenceError("");
+    const saved = await handleSaveEvidenceSource(source);
+    setManualEdgeEvidenceSaving(false);
+
+    if (!saved) {
+      setManualEdgeEvidenceError("Failed to save paper link.");
+      return;
+    }
+
+    setManualEdgeEvidenceTitle("");
+    setManualEdgeEvidenceUrl("");
+    setManualEdgeEvidenceYear("");
+    setManualEdgeEvidenceJournal("");
+    setManualEdgeEvidenceAuthors("");
+    setManualEdgeEvidenceReason("");
   }
 
   async function handleDeleteSavedEvidence(id: string) {
@@ -964,6 +1256,32 @@ export default function DashboardPage() {
   const showTopicDetail = Boolean(selectedTopic && !connectingFrom);
   const showNotesSidebar = Boolean(notesTopic && !connectingFrom);
   const showLinkDetail = Boolean(selectedLink && !connectingFrom);
+  const selectedMap = selectedMapId
+    ? maps.find((map) => map.id === selectedMapId) || null
+    : null;
+  const selectedMapShareUrl =
+    selectedMap?.share_slug && selectedMap.is_public
+      ? buildPublicShareUrl(selectedMap.share_slug)
+      : null;
+  const recommendedSimilarityThreshold =
+    typeof tdaHealth?.recommendedSimilarityThreshold === "number"
+      ? clampValue(tdaHealth.recommendedSimilarityThreshold, 0.05, 0.6)
+      : null;
+  const recommendedClusterThreshold =
+    typeof tdaHealth?.recommendedClusterThreshold === "number"
+      ? clampValue(tdaHealth.recommendedClusterThreshold, 0.2, 0.7)
+      : null;
+  const recommendedLinkForceScale =
+    typeof tdaHealth?.recommendedLinkForceScale === "number"
+      ? clampValue(tdaHealth.recommendedLinkForceScale, 0.5, 3)
+      : null;
+  const isRecommendedLayoutApplied =
+    recommendedSimilarityThreshold !== null &&
+    recommendedClusterThreshold !== null &&
+    recommendedLinkForceScale !== null &&
+    Math.abs(threshold - recommendedSimilarityThreshold) < 0.005 &&
+    Math.abs(clusterThreshold - recommendedClusterThreshold) < 0.005 &&
+    Math.abs(linkForceScale - recommendedLinkForceScale) < 0.005;
 
   if (mapsLoading || initialLoading) {
     return (
@@ -989,7 +1307,7 @@ export default function DashboardPage() {
               </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+	            <div className="flex flex-wrap items-center gap-2">
               <label className="text-xs text-gray-400">Map</label>
               <select
                 value={selectedMapId ?? ""}
@@ -1011,17 +1329,67 @@ export default function DashboardPage() {
                 placeholder="New map name"
                 className="px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
               />
-              <button
-                onClick={handleCreateMap}
-                disabled={creatingMap}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-md text-sm font-medium"
-              >
-                {creatingMap ? "Creating..." : "Create"}
-              </button>
-            </div>
-          </div>
+	              <button
+	                onClick={handleCreateMap}
+	                disabled={creatingMap}
+	                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-md text-sm font-medium"
+	              >
+	                {creatingMap ? "Creating..." : "Create"}
+	              </button>
+	            </div>
+	          </div>
 
-          {error && <p className="text-red-400 text-sm mb-2">{error}</p>}
+	          {selectedMapId && (
+	            <div className="flex flex-wrap items-center gap-2 mb-2">
+	              <span className="text-xs text-gray-400">Share</span>
+	              {selectedMap?.is_public && selectedMap?.share_slug ? (
+	                <>
+	                  <button
+	                    onClick={() => handleCopyShareLink(selectedMap.share_slug!)}
+	                    className="px-2.5 py-1 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500"
+	                  >
+	                    Copy link
+	                  </button>
+	                  {selectedMapShareUrl && (
+	                    <a
+	                      href={selectedMapShareUrl}
+	                      target="_blank"
+	                      rel="noopener noreferrer"
+	                      className="px-2.5 py-1 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500"
+	                    >
+	                      Open shared page
+	                    </a>
+	                  )}
+	                  <button
+	                    onClick={() => handleEnableSharing(true)}
+	                    disabled={shareActionLoading}
+	                    className="px-2.5 py-1 rounded-md border border-amber-500/60 text-xs text-amber-300 hover:text-amber-200 disabled:opacity-60"
+	                  >
+	                    {shareActionLoading ? "Working..." : "Regenerate link"}
+	                  </button>
+	                  <button
+	                    onClick={handleDisableSharing}
+	                    disabled={shareActionLoading}
+	                    className="px-2.5 py-1 rounded-md border border-red-500/60 text-xs text-red-300 hover:text-red-200 disabled:opacity-60"
+	                  >
+	                    {shareActionLoading ? "Working..." : "Disable sharing"}
+	                  </button>
+	                </>
+	              ) : (
+	                <button
+	                  onClick={() => handleEnableSharing(false)}
+	                  disabled={shareActionLoading}
+	                  className="px-2.5 py-1 rounded-md border border-blue-500/60 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-60"
+	                >
+	                  {shareActionLoading ? "Working..." : "Share read-only map"}
+	                </button>
+	              )}
+	              {shareFeedback && <span className="text-xs text-green-300">{shareFeedback}</span>}
+	              {shareError && <span className="text-xs text-red-300">{shareError}</span>}
+	            </div>
+	          )}
+
+	          {error && <p className="text-red-400 text-sm mb-2">{error}</p>}
 
           <InterestPicker
             interests={interests.map((i) => i.name)}
@@ -1055,7 +1423,67 @@ export default function DashboardPage() {
           <summary className="text-xs text-gray-400 cursor-pointer select-none">
             Advanced layout
           </summary>
-          <div className="space-y-2 mt-3">
+          <div className="space-y-3 mt-3">
+            <div className="rounded-md border border-cyan-900/60 bg-cyan-950/20 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs font-medium text-cyan-300">
+                  TDA recommendation
+                </span>
+                {tdaLoading ? (
+                  <span className="text-xs text-gray-500">Analyzing topology...</span>
+                ) : tdaError ? (
+                  <span className="text-xs text-red-300">{tdaError}</span>
+                ) : recommendedSimilarityThreshold !== null &&
+                  recommendedClusterThreshold !== null &&
+                  recommendedLinkForceScale !== null ? (
+                  <>
+                    <span className="text-xs text-gray-300">
+                      Similarity{" "}
+                      <span className="font-mono text-white">
+                        {recommendedSimilarityThreshold.toFixed(2)}
+                      </span>
+                      {"  "}Cluster{" "}
+                      <span className="font-mono text-white">
+                        {recommendedClusterThreshold.toFixed(2)}
+                      </span>
+                      {"  "}Link pull{" "}
+                      <span className="font-mono text-white">
+                        {recommendedLinkForceScale.toFixed(2)}
+                      </span>
+                    </span>
+                    <button
+                      onClick={() =>
+                        applyRecommendedLayoutSettings(
+                          recommendedSimilarityThreshold,
+                          recommendedClusterThreshold,
+                          recommendedLinkForceScale
+                        )
+                      }
+                      disabled={isRecommendedLayoutApplied}
+                      className="ml-auto rounded-md bg-gradient-to-r from-cyan-500 to-blue-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:from-cyan-400 hover:to-blue-400 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isRecommendedLayoutApplied
+                        ? "Recommendation applied"
+                        : "Apply recommendation"}
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-xs text-gray-500">
+                    Add more embedded topics to compute a recommendation.
+                  </span>
+                )}
+              </div>
+              {!tdaLoading &&
+                !tdaError &&
+                recommendedSimilarityThreshold !== null &&
+                recommendedClusterThreshold !== null &&
+                recommendedLinkForceScale !== null && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-cyan-100/70">
+                    {tdaHealth?.recommendationReason} {tdaHealth?.clusterRecommendationReason}{" "}
+                    {tdaHealth?.linkForceRecommendationReason}
+                  </p>
+                )}
+            </div>
             <div className="flex items-center gap-3">
               <label className="text-xs text-gray-400 whitespace-nowrap w-24">
                 Cluster
@@ -1395,6 +1823,67 @@ export default function DashboardPage() {
                       )}
                     </div>
                   )}
+
+                  <details className="rounded-md border border-blue-800/40 bg-blue-950/10 px-3 py-2">
+                    <summary className="cursor-pointer select-none text-xs text-blue-200">
+                      Add your own paper link
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={manualEdgeEvidenceTitle}
+                          onChange={(e) => setManualEdgeEvidenceTitle(e.target.value)}
+                          placeholder="Paper title *"
+                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                        />
+                        <input
+                          type="text"
+                          value={manualEdgeEvidenceUrl}
+                          onChange={(e) => setManualEdgeEvidenceUrl(e.target.value)}
+                          placeholder="URL or DOI link *"
+                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                        />
+                        <input
+                          type="text"
+                          value={manualEdgeEvidenceJournal}
+                          onChange={(e) => setManualEdgeEvidenceJournal(e.target.value)}
+                          placeholder="Journal / venue (optional)"
+                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                        />
+                        <input
+                          type="text"
+                          value={manualEdgeEvidenceYear}
+                          onChange={(e) => setManualEdgeEvidenceYear(e.target.value)}
+                          placeholder="Year (optional)"
+                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        value={manualEdgeEvidenceAuthors}
+                        onChange={(e) => setManualEdgeEvidenceAuthors(e.target.value)}
+                        placeholder="Authors (optional, comma-separated)"
+                        className="w-full rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                      />
+                      <textarea
+                        value={manualEdgeEvidenceReason}
+                        onChange={(e) => setManualEdgeEvidenceReason(e.target.value)}
+                        placeholder="Why this paper supports this connection (optional)"
+                        className="w-full min-h-[64px] rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                      />
+                      {manualEdgeEvidenceError && (
+                        <p className="text-xs text-red-300">{manualEdgeEvidenceError}</p>
+                      )}
+                      <button
+                        onClick={handleSaveManualEdgeEvidence}
+                        disabled={manualEdgeEvidenceSaving}
+                        className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-xs text-white"
+                      >
+                        {manualEdgeEvidenceSaving ? "Saving..." : "Save paper link"}
+                      </button>
+                    </div>
+                  </details>
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">

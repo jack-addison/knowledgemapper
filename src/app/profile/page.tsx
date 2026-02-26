@@ -5,7 +5,7 @@ import Link from "next/link";
 import Navbar from "@/components/Layout/Navbar";
 import { createClient } from "@/lib/supabase";
 import { buildGraph } from "@/lib/graph";
-import type { Interest, KnowledgeMap } from "@/lib/types";
+import type { Interest, KnowledgeMap, TdaMapHealth } from "@/lib/types";
 import type { User } from "@supabase/supabase-js";
 
 interface MapStats {
@@ -48,6 +48,12 @@ export default function ProfilePage() {
   const [user, setUser] = useState<User | null>(null);
   const [maps, setMaps] = useState<KnowledgeMap[]>([]);
   const [interests, setInterests] = useState<Interest[]>([]);
+  const [selectedHealthMapId, setSelectedHealthMapId] = useState<string | null>(
+    null
+  );
+  const [mapHealth, setMapHealth] = useState<TdaMapHealth | null>(null);
+  const [mapHealthLoading, setMapHealthLoading] = useState(false);
+  const [mapHealthError, setMapHealthError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const supabase = createClient();
@@ -99,6 +105,67 @@ export default function ProfilePage() {
 
     loadProfile();
   }, [supabase]);
+
+  useEffect(() => {
+    if (maps.length === 0) {
+      setSelectedHealthMapId(null);
+      setMapHealth(null);
+      return;
+    }
+
+    setSelectedHealthMapId((prev) => {
+      if (prev && maps.some((map) => map.id === prev)) {
+        return prev;
+      }
+      return maps[0].id;
+    });
+  }, [maps]);
+
+  useEffect(() => {
+    const mapId = selectedHealthMapId;
+    if (!mapId) {
+      setMapHealth(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadMapHealth(activeMapId: string) {
+      setMapHealthLoading(true);
+      setMapHealthError("");
+      try {
+        const res = await fetch(
+          `/api/tda/map-health?mapId=${encodeURIComponent(activeMapId)}`
+        );
+        if (!cancelled) {
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            setMapHealth(null);
+            setMapHealthError(data.error || "Failed to load topology metrics");
+            return;
+          }
+
+          const data: TdaMapHealth = await res.json();
+          setMapHealth(data);
+        }
+      } catch {
+        if (!cancelled) {
+          setMapHealth(null);
+          setMapHealthError("Failed to load topology metrics");
+        }
+      } finally {
+        if (!cancelled) {
+          setMapHealthLoading(false);
+        }
+      }
+    }
+
+    loadMapHealth(mapId);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedHealthMapId]);
 
   const mapStats = useMemo<MapStats[]>(() => {
     return maps.map((map) => {
@@ -222,6 +289,130 @@ export default function ProfilePage() {
                 </p>
               </div>
             </div>
+
+            <section className="rounded-xl border border-gray-800 bg-gray-900 p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold">Topology Health (TDA v1)</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Persistent connectedness and structural stability signals
+                  </p>
+                </div>
+                <select
+                  value={selectedHealthMapId ?? ""}
+                  onChange={(e) => setSelectedHealthMapId(e.target.value || null)}
+                  className="px-2 py-1.5 bg-gray-950 border border-gray-700 rounded-md text-sm text-gray-200 focus:outline-none focus:border-blue-500"
+                >
+                  {maps.map((map) => (
+                    <option key={map.id} value={map.id}>
+                      {map.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {mapHealthError && (
+                <p className="text-sm text-red-300">{mapHealthError}</p>
+              )}
+
+              {mapHealthLoading ? (
+                <p className="text-sm text-gray-500">Computing topology metrics...</p>
+              ) : mapHealth ? (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                    <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                      <p className="text-xs text-gray-400">Stability</p>
+                      <p className="text-lg font-semibold text-gray-100">
+                        {mapHealth.stabilityScore}%
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                      <p className="text-xs text-gray-400">Fragmentation</p>
+                      <p className="text-lg font-semibold text-gray-100">
+                        {mapHealth.fragmentationIndex.toFixed(2)}
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                      <p className="text-xs text-gray-400">Cycle Rank</p>
+                      <p className="text-lg font-semibold text-gray-100">
+                        {mapHealth.cycleRankAtDefault}
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                      <p className="text-xs text-gray-400">Suggested Similarity</p>
+                      <p className="text-lg font-semibold text-cyan-300">
+                        {mapHealth.recommendedSimilarityThreshold !== null
+                          ? mapHealth.recommendedSimilarityThreshold.toFixed(2)
+                          : "N/A"}
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                      <p className="text-xs text-gray-400">Suggested Cluster</p>
+                      <p className="text-lg font-semibold text-cyan-300">
+                        {mapHealth.recommendedClusterThreshold !== null
+                          ? mapHealth.recommendedClusterThreshold.toFixed(2)
+                          : "N/A"}
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                      <p className="text-xs text-gray-400">Suggested Link Pull</p>
+                      <p className="text-lg font-semibold text-cyan-300">
+                        {mapHealth.recommendedLinkForceScale !== null
+                          ? mapHealth.recommendedLinkForceScale.toFixed(2)
+                          : "N/A"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-gray-800 bg-gray-950/40 px-3 py-2 space-y-1">
+                    <p className="text-xs text-gray-400">{mapHealth.recommendationReason}</p>
+                    <p className="text-xs text-gray-500">
+                      {mapHealth.clusterRecommendationReason}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {mapHealth.linkForceRecommendationReason}
+                    </p>
+                  </div>
+
+                  {mapHealth.samples.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-500">Threshold sweep</p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-gray-500 border-b border-gray-800">
+                              <th className="py-1.5 pr-2 font-medium">Similarity</th>
+                              <th className="py-1.5 pr-2 font-medium">Components</th>
+                              <th className="py-1.5 pr-2 font-medium">Largest Component</th>
+                              <th className="py-1.5 font-medium">Cycle Rank</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {mapHealth.samples.map((sample) => (
+                              <tr
+                                key={sample.threshold}
+                                className="border-b border-gray-800/70 text-gray-300"
+                              >
+                                <td className="py-1.5 pr-2">{sample.threshold.toFixed(2)}</td>
+                                <td className="py-1.5 pr-2">{sample.componentCount}</td>
+                                <td className="py-1.5 pr-2">
+                                  {(sample.largestComponentRatio * 100).toFixed(0)}%
+                                </td>
+                                <td className="py-1.5">{sample.cycleRank}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Select a map with embedded topics to view topology metrics.
+                </p>
+              )}
+            </section>
 
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
               <section className="xl:col-span-1 rounded-xl border border-gray-800 bg-gray-900 p-5 space-y-4">

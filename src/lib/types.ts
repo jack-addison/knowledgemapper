@@ -14,6 +14,9 @@ export interface KnowledgeMap {
   user_id: string;
   name: string;
   created_at: string;
+  is_public?: boolean;
+  share_slug?: string | null;
+  shared_at?: string | null;
 }
 
 export interface GraphNode {
@@ -48,6 +51,7 @@ export interface EvidenceSource {
   journal: string;
   authors: string[];
   reason: string;
+  sourceProvider?: string;
 }
 
 export interface EdgeEvidence {
@@ -68,12 +72,17 @@ export interface SavedEdgeEvidence extends EvidenceSource {
   id: string;
   source_provider: string;
   created_at: string;
+  map_id?: string;
+  interest_a_id?: string;
+  interest_b_id?: string;
 }
 
 export interface SavedInterestEvidence extends EvidenceSource {
   id: string;
   source_provider: string;
   created_at: string;
+  map_id?: string;
+  interest_id?: string;
 }
 
 export interface EdgeNotesRecord {
@@ -81,7 +90,57 @@ export interface EdgeNotesRecord {
   updated_at: string | null;
 }
 
+export interface TdaThresholdSample {
+  threshold: number;
+  edgeCount: number;
+  componentCount: number;
+  largestComponentRatio: number;
+  cycleRank: number;
+}
+
+export interface TdaMapHealth {
+  nodeCount: number;
+  embeddedNodeCount: number;
+  analyzedNodeCount: number;
+  embeddingDimension: number | null;
+  edgeCountAtDefault: number;
+  componentCountAtDefault: number;
+  largestComponentRatioAtDefault: number;
+  cycleRankAtDefault: number;
+  fragmentationIndex: number;
+  stabilityScore: number;
+  recommendedSimilarityThreshold: number | null;
+  recommendedClusterThreshold: number | null;
+  recommendedLinkForceScale: number | null;
+  recommendationReason: string;
+  clusterRecommendationReason: string;
+  linkForceRecommendationReason: string;
+  samples: TdaThresholdSample[];
+  computedAt: string;
+}
+
 export interface Recommendation {
   name: string;
   reason: string;
+}
+
+export interface SharedEdgeNote {
+  interest_a_id: string;
+  interest_b_id: string;
+  notes: string;
+  updated_at: string | null;
+}
+
+export interface SharedMapSnapshot {
+  map: {
+    id: string;
+    name: string;
+    share_slug: string;
+    shared_at: string | null;
+    created_at: string;
+  };
+  interests: Interest[];
+  interestEvidence: SavedInterestEvidence[];
+  edgeEvidence: SavedEdgeEvidence[];
+  edgeNotes: SharedEdgeNote[];
 }
