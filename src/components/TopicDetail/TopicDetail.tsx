@@ -68,6 +68,18 @@ function getSemanticScholarUrl(topic: string): string {
   return `https://www.semanticscholar.org/search?q=${encodeURIComponent(topic)}`;
 }
 
+function getCrossrefSearchUrl(topic: string): string {
+  return `https://search.crossref.org/?q=${encodeURIComponent(topic)}`;
+}
+
+function getCoreSearchUrl(topic: string): string {
+  return `https://core.ac.uk/search?q=${encodeURIComponent(topic)}`;
+}
+
+function getPubMedSearchUrl(topic: string): string {
+  return `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(topic)}`;
+}
+
 function getGitHubSearchUrl(topic: string): string {
   return `https://github.com/search?q=${encodeURIComponent(topic)}&type=repositories`;
 }
@@ -179,6 +191,7 @@ export default function TopicDetail({
   const [manualSourceReason, setManualSourceReason] = useState("");
   const [manualSourceError, setManualSourceError] = useState("");
   const [manualSourceSaving, setManualSourceSaving] = useState(false);
+  const [researchMode, setResearchMode] = useState(false);
   const [activeLearningMode, setActiveLearningMode] =
     useState<LearningMode>("overview");
   const learningResources: LearningResource[] = [
@@ -298,6 +311,21 @@ export default function TopicDetail({
         sortedModeResources.find((resource) => resource.stage === stage) || null,
     })
   );
+  const researchQuestions = [
+    `What are the seminal or most-cited papers in ${name}?`,
+    `How has ${name} evolved over the last 5 years?`,
+    `What are the strongest competing theories or methods in ${name}?`,
+    `Which datasets and benchmarks are most trusted for ${name}?`,
+    `What limitations or failure modes are repeatedly reported in ${name}?`,
+  ];
+  const researchSearchAngles = [
+    `${name} survey review`,
+    `${name} benchmark`,
+    `${name} limitations`,
+    `${name} open problems`,
+    `${name} reproducibility`,
+    `${name} meta analysis`,
+  ];
 
   async function handleConfirmExpand() {
     if (readOnly) return;
@@ -381,6 +409,16 @@ export default function TopicDetail({
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setResearchMode((prev) => !prev)}
+            className={`px-2 py-1 rounded-md border text-xs transition-colors ${
+              researchMode
+                ? "border-cyan-500/70 bg-cyan-500/10 text-cyan-200"
+                : "border-gray-700 text-gray-300 hover:text-white hover:border-gray-500"
+            }`}
+          >
+            {researchMode ? "Research on" : "Research"}
+          </button>
+          <button
             onClick={onToggleExpand}
             className="px-2 py-1 rounded-md border border-gray-700 text-xs text-gray-300 hover:text-white hover:border-gray-500"
           >
@@ -396,6 +434,103 @@ export default function TopicDetail({
       </div>
 
       <div className="space-y-3">
+        {researchMode && (
+          <div className="rounded-md border border-cyan-900/50 bg-cyan-950/20 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-cyan-300 font-medium">Research workspace</p>
+              <span className="text-[10px] uppercase tracking-wide text-cyan-200/70">
+                node
+              </span>
+            </div>
+            <p className="text-xs text-cyan-100/75">
+              Use broader sources and targeted prompts to build a stronger paper
+              trail for this topic.
+            </p>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <a
+                href={getGoogleScholarUrl(name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+              >
+                Google Scholar
+              </a>
+              <a
+                href={getSemanticScholarUrl(name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+              >
+                Semantic Scholar
+              </a>
+              <a
+                href={getArxivUrl(name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+              >
+                arXiv
+              </a>
+              <a
+                href={getCrossrefSearchUrl(name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+              >
+                Crossref
+              </a>
+              <a
+                href={getCoreSearchUrl(name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+              >
+                CORE
+              </a>
+              <a
+                href={getPubMedSearchUrl(name)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+              >
+                PubMed
+              </a>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-cyan-100/75">Suggested questions</p>
+              <ul className="space-y-1">
+                {researchQuestions.map((question) => (
+                  <li
+                    key={question}
+                    className="text-xs text-cyan-50/90 rounded-md border border-cyan-900/40 bg-cyan-950/30 px-2.5 py-1.5"
+                  >
+                    {question}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-cyan-100/75">Paper search angles</p>
+              <div className="flex flex-wrap gap-1.5">
+                {researchSearchAngles.map((angle) => (
+                  <a
+                    key={angle}
+                    href={getGoogleScholarUrl(angle)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-full border border-cyan-800/50 px-2 py-1 text-[11px] text-cyan-100 hover:border-cyan-500/60"
+                  >
+                    {angle}
+                  </a>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="rounded-md border border-gray-700 bg-gray-800/50 p-3 space-y-2">
           <p className="text-xs text-gray-400">Quick actions</p>
           {readOnly ? (

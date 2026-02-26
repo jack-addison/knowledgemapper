@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 interface NotesSidebarProps {
   topicName: string;
@@ -8,6 +8,34 @@ interface NotesSidebarProps {
   onSave: (notes: string) => Promise<void>;
   onClose: () => void;
 }
+
+const NOTE_TEMPLATES = [
+  {
+    id: "claim",
+    label: "Claim",
+    text: "Claim:\n- ",
+  },
+  {
+    id: "evidence",
+    label: "Evidence",
+    text: "Evidence:\n- Source:\n- Key result:\n- Confidence:\n",
+  },
+  {
+    id: "question",
+    label: "Open Question",
+    text: "Open question:\n- ",
+  },
+  {
+    id: "next-step",
+    label: "Next Step",
+    text: "Next step:\n- ",
+  },
+  {
+    id: "citation",
+    label: "Citation",
+    text: "Citation note:\n- Author (Year):\n- Why relevant:\n",
+  },
+];
 
 export default function NotesSidebar({
   topicName,
@@ -26,7 +54,24 @@ export default function NotesSidebar({
     setSaveState("idle");
   }, [initialNotes, topicName]);
 
-  async function handleSave() {
+  const wordCount = useMemo(() => {
+    const trimmed = notes.trim();
+    if (!trimmed) return 0;
+    return trimmed.split(/\s+/).length;
+  }, [notes]);
+
+  const charCount = notes.length;
+
+  const appendTemplate = useCallback((snippet: string) => {
+    setNotes((prev) => {
+      const trimmed = prev.trimEnd();
+      const spacer = trimmed.length > 0 ? "\n\n" : "";
+      return `${trimmed}${spacer}${snippet}`;
+    });
+    if (saveState !== "idle") setSaveState("idle");
+  }, [saveState]);
+
+  const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveState("idle");
     try {
@@ -37,7 +82,22 @@ export default function NotesSidebar({
     } finally {
       setSaving(false);
     }
-  }
+  }, [notes, onSave]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const key = event.key.toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "s") {
+        event.preventDefault();
+        if (!saving) {
+          void handleSave();
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleSave, saving]);
 
   return (
     <aside className="h-full border border-gray-700 rounded-lg bg-gray-900 p-4 flex flex-col">
@@ -54,6 +114,25 @@ export default function NotesSidebar({
         </button>
       </div>
 
+      <div className="mb-3 rounded-md border border-gray-800 bg-gray-800/40 p-2.5 space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-[11px] text-gray-400">Quick note blocks</p>
+          <span className="text-[11px] text-gray-500">Ctrl/Cmd+S to save</span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {NOTE_TEMPLATES.map((template) => (
+            <button
+              key={template.id}
+              type="button"
+              onClick={() => appendTemplate(template.text)}
+              className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-blue-500/60 hover:text-blue-200"
+            >
+              {template.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <textarea
         value={notes}
         onChange={(e) => {
@@ -65,21 +144,28 @@ export default function NotesSidebar({
       />
 
       <div className="mt-3 flex items-center justify-between gap-3">
-        <span
-          className={`text-xs ${
-            saveState === "saved"
-              ? "text-green-400"
-              : saveState === "error"
-                ? "text-red-400"
-                : "text-gray-500"
-          }`}
-        >
-          {saveState === "saved"
-            ? "Saved"
-            : saveState === "error"
-              ? "Failed to save"
-              : " "}
-        </span>
+        <div className="space-y-0.5">
+          <span className="text-xs text-gray-500">
+            {wordCount} words · {charCount} chars
+          </span>
+          <div>
+            <span
+              className={`text-xs ${
+                saveState === "saved"
+                  ? "text-green-400"
+                  : saveState === "error"
+                    ? "text-red-400"
+                    : "text-gray-500"
+              }`}
+            >
+              {saveState === "saved"
+                ? "Saved"
+                : saveState === "error"
+                  ? "Failed to save"
+                  : " "}
+            </span>
+          </div>
+        </div>
         <button
           onClick={handleSave}
           disabled={saving}

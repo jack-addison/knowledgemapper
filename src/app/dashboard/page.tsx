@@ -11,6 +11,7 @@ import {
   EdgeEvidence,
   EvidenceSource,
   GraphLinkSelection,
+  GraphLayoutMode,
   Interest,
   GraphData,
   KnowledgeMap,
@@ -161,12 +162,14 @@ interface MapLayoutSettings {
   similarityThreshold: number;
   clusterThreshold: number;
   linkForceScale: number;
+  layoutMode: GraphLayoutMode;
 }
 
 const DEFAULT_MAP_LAYOUT_SETTINGS: MapLayoutSettings = {
   similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
   clusterThreshold: DEFAULT_CLUSTER_THRESHOLD,
   linkForceScale: DEFAULT_LINK_FORCE_SCALE,
+  layoutMode: "umap",
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -185,6 +188,11 @@ function getStoredMapLayoutSettings(mapId: string): MapLayoutSettings {
 
   try {
     const parsed = JSON.parse(raw) as Partial<MapLayoutSettings>;
+    const parsedLayoutMode =
+      parsed.layoutMode === "umap" || parsed.layoutMode === "classic"
+        ? parsed.layoutMode
+        : DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode;
+
     return {
       similarityThreshold: clampValue(
         Number(parsed.similarityThreshold ?? DEFAULT_SIMILARITY_THRESHOLD),
@@ -201,6 +209,7 @@ function getStoredMapLayoutSettings(mapId: string): MapLayoutSettings {
         0.5,
         3
       ),
+      layoutMode: parsedLayoutMode,
     };
   } catch {
     return DEFAULT_MAP_LAYOUT_SETTINGS;
@@ -218,6 +227,7 @@ function saveMapLayoutSettings(
     similarityThreshold: updates.similarityThreshold ?? current.similarityThreshold,
     clusterThreshold: updates.clusterThreshold ?? current.clusterThreshold,
     linkForceScale: updates.linkForceScale ?? current.linkForceScale,
+    layoutMode: updates.layoutMode ?? current.layoutMode,
   };
 
   localStorage.setItem(getMapLayoutStorageKey(mapId), JSON.stringify(next));
@@ -254,6 +264,52 @@ function explainLink(link: GraphLinkSelection): string {
 
 function buildResearchQuery(link: GraphLinkSelection): string {
   return `${link.sourceName} ${link.targetName}`;
+}
+
+function getArxivSearchUrl(query: string): string {
+  return `https://arxiv.org/search/?query=${encodeURIComponent(query)}&searchtype=all`;
+}
+
+function getCrossrefSearchUrl(query: string): string {
+  return `https://search.crossref.org/?q=${encodeURIComponent(query)}`;
+}
+
+function getCoreSearchUrl(query: string): string {
+  return `https://core.ac.uk/search?q=${encodeURIComponent(query)}`;
+}
+
+function getPubMedSearchUrl(query: string): string {
+  return `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(query)}`;
+}
+
+function buildEdgeResearchQuestions(link: GraphLinkSelection): string[] {
+  return [
+    `What mechanisms most plausibly connect ${link.sourceName} and ${link.targetName}?`,
+    `Which papers provide the strongest empirical evidence for this link?`,
+    `Are there high-quality papers arguing against or weakening this connection?`,
+    `In which contexts does ${link.sourceName} influence ${link.targetName} the most?`,
+    `What methods or datasets are commonly used to study this relationship?`,
+  ];
+}
+
+function buildEdgeSearchAngles(link: GraphLinkSelection): string[] {
+  return [
+    `${link.sourceName} ${link.targetName} systematic review`,
+    `${link.sourceName} ${link.targetName} meta analysis`,
+    `${link.sourceName} ${link.targetName} benchmark dataset`,
+    `${link.sourceName} ${link.targetName} causal mechanism`,
+    `${link.sourceName} ${link.targetName} contradictory findings`,
+  ];
+}
+
+function buildEdgeNoteTemplates(link: GraphLinkSelection): string[] {
+  return [
+    `Claim:\n- ${link.sourceName} influences ${link.targetName} by ...`,
+    "Evidence summary:\n- Source:\n- Method:\n- Key finding:\n- Confidence:",
+    "Counter-evidence:\n- Source:\n- Contradiction or limitation:",
+    `Open question:\n- Under what conditions does ${link.sourceName} fail to predict ${link.targetName}?`,
+    "Next experiment:\n- Dataset:\n- Method:\n- Outcome to test:",
+  ];
 }
 
 function normalizeEdgePair(a: string, b: string): { a: string; b: string } {
@@ -332,6 +388,7 @@ export default function DashboardPage() {
   const [savedEdgeEvidence, setSavedEdgeEvidence] = useState<SavedEdgeEvidence[]>(
     []
   );
+  const [edgeResearchMode, setEdgeResearchMode] = useState(false);
   const [savedEdgeEvidenceLoading, setSavedEdgeEvidenceLoading] = useState(false);
   const [savedEdgeEvidenceError, setSavedEdgeEvidenceError] = useState("");
   const [savingEvidenceUrl, setSavingEvidenceUrl] = useState<string | null>(null);
@@ -367,6 +424,9 @@ export default function DashboardPage() {
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
   const [linkForceScale, setLinkForceScale] = useState(DEFAULT_LINK_FORCE_SCALE);
+  const [layoutMode, setLayoutMode] = useState<GraphLayoutMode>(
+    DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode
+  );
   const [fastSettleMode, setFastSettleMode] = useState(true);
   const [tdaHealth, setTdaHealth] = useState<TdaMapHealth | null>(null);
   const [tdaLoading, setTdaLoading] = useState(false);
@@ -578,10 +638,15 @@ export default function DashboardPage() {
   }, [selectedLinkKey, isMapFullscreen]);
 
   useEffect(() => {
+    setEdgeResearchMode(false);
+  }, [selectedLinkKey]);
+
+  useEffect(() => {
     if (!selectedMapId) {
       setThreshold(DEFAULT_SIMILARITY_THRESHOLD);
       setClusterThreshold(DEFAULT_CLUSTER_THRESHOLD);
       setLinkForceScale(DEFAULT_LINK_FORCE_SCALE);
+      setLayoutMode(DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode);
       setTdaHealth(null);
       setTdaError("");
       setTdaLoading(false);
@@ -592,6 +657,7 @@ export default function DashboardPage() {
     setThreshold(settings.similarityThreshold);
     setClusterThreshold(settings.clusterThreshold);
     setLinkForceScale(settings.linkForceScale);
+    setLayoutMode(settings.layoutMode);
   }, [selectedMapId]);
 
   useEffect(() => {
@@ -997,6 +1063,13 @@ export default function DashboardPage() {
     setLinkForceScale(value);
     if (selectedMapId) {
       saveMapLayoutSettings(selectedMapId, { linkForceScale: value });
+    }
+  }
+
+  function handleLayoutModeChange(mode: GraphLayoutMode) {
+    setLayoutMode(mode);
+    if (selectedMapId) {
+      saveMapLayoutSettings(selectedMapId, { layoutMode: mode });
     }
   }
 
@@ -1765,6 +1838,17 @@ export default function DashboardPage() {
     }
   }
 
+  function handleAppendEdgeNoteTemplate(template: string) {
+    setEdgeNotes((prev) => {
+      const trimmed = prev.trimEnd();
+      const spacer = trimmed.length > 0 ? "\n\n" : "";
+      return `${trimmed}${spacer}${template}`;
+    });
+    if (edgeNotesError) {
+      setEdgeNotesError("");
+    }
+  }
+
   async function handleSaveNotes(topicId: string, notes: string) {
     if (isCombinedMapId(selectedMapId)) {
       throw new Error("Combined map is read-only.");
@@ -1791,6 +1875,20 @@ export default function DashboardPage() {
   const showTopicDetail = Boolean(selectedTopic && !connectingFrom);
   const showNotesSidebar = Boolean(notesTopic && !connectingFrom);
   const showLinkDetail = Boolean(selectedLink && !connectingFrom);
+  const edgeResearchQuery = selectedLink ? buildResearchQuery(selectedLink) : "";
+  const edgeResearchQuestions = selectedLink
+    ? buildEdgeResearchQuestions(selectedLink)
+    : [];
+  const edgeResearchSearchAngles = selectedLink
+    ? buildEdgeSearchAngles(selectedLink)
+    : [];
+  const edgeNoteTemplates = selectedLink
+    ? buildEdgeNoteTemplates(selectedLink)
+    : [];
+  const edgeNotesWordCount = edgeNotes.trim()
+    ? edgeNotes.trim().split(/\s+/).length
+    : 0;
+  const edgeNotesCharCount = edgeNotes.length;
 
   useEffect(() => {
     if (isMapFullscreen && showTopicDetail) {
@@ -1997,6 +2095,38 @@ export default function DashboardPage() {
             Advanced layout
           </summary>
           <div className="space-y-3 mt-3">
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-gray-400 whitespace-nowrap w-24">
+                Layout mode
+              </label>
+              <div className="inline-flex rounded-md border border-gray-700 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => handleLayoutModeChange("classic")}
+                  className={`px-3 py-1.5 text-xs transition-colors ${
+                    layoutMode === "classic"
+                      ? "bg-gray-700 text-white"
+                      : "bg-gray-900/50 text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  Classic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleLayoutModeChange("umap")}
+                  className={`px-3 py-1.5 text-xs border-l border-gray-700 transition-colors ${
+                    layoutMode === "umap"
+                      ? "bg-cyan-700/60 text-cyan-100"
+                      : "bg-gray-900/50 text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  UMAP (beta)
+                </button>
+              </div>
+              <span className="text-xs text-gray-500">
+                UMAP uses embeddings directly for initial 2D placement.
+              </span>
+            </div>
             <div className="rounded-md border border-cyan-900/60 bg-cyan-950/20 px-3 py-2">
               <div className="flex flex-wrap items-center gap-3">
                 <span className="text-xs font-medium text-cyan-300">
@@ -2173,6 +2303,7 @@ export default function DashboardPage() {
               selectedLink={selectedLink}
               connectingFromName={connectingFrom}
               linkForceScale={linkForceScale}
+              layoutMode={layoutMode}
               fastSettle={fastSettleMode}
               fullscreen={isMapFullscreen}
               onNodeClick={handleNodeClick}
@@ -2322,6 +2453,16 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
+                      onClick={() => setEdgeResearchMode((prev) => !prev)}
+                      className={`px-2 py-1 rounded-md border text-xs transition-colors ${
+                        edgeResearchMode
+                          ? "border-cyan-500/70 bg-cyan-500/10 text-cyan-200"
+                          : "border-gray-700 text-gray-300 hover:text-white hover:border-gray-500"
+                      }`}
+                    >
+                      {edgeResearchMode ? "Research on" : "Research"}
+                    </button>
+                    <button
                       onClick={() =>
                         setEdgePanelExpanded((prevExpanded) => !prevExpanded)
                       }
@@ -2353,6 +2494,107 @@ export default function DashboardPage() {
                     </span>
                   </p>
                 </div>
+
+                {edgeResearchMode && (
+                  <div className="rounded-md border border-cyan-900/50 bg-cyan-950/20 p-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-cyan-300 font-medium">
+                        Research workspace
+                      </p>
+                      <span className="text-[10px] uppercase tracking-wide text-cyan-200/70">
+                        edge
+                      </span>
+                    </div>
+                    <p className="text-xs text-cyan-100/75">
+                      Explore deeper evidence around this link using broader
+                      literature sources and focused research prompts.
+                    </p>
+
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      <a
+                        href={`https://scholar.google.com/scholar?q=${encodeURIComponent(edgeResearchQuery)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+                      >
+                        Google Scholar
+                      </a>
+                      <a
+                        href={`https://www.semanticscholar.org/search?q=${encodeURIComponent(edgeResearchQuery)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+                      >
+                        Semantic Scholar
+                      </a>
+                      <a
+                        href={getArxivSearchUrl(edgeResearchQuery)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+                      >
+                        arXiv
+                      </a>
+                      <a
+                        href={getCrossrefSearchUrl(edgeResearchQuery)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+                      >
+                        Crossref
+                      </a>
+                      <a
+                        href={getCoreSearchUrl(edgeResearchQuery)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+                      >
+                        CORE
+                      </a>
+                      <a
+                        href={getPubMedSearchUrl(edgeResearchQuery)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 rounded-md border border-cyan-800/50 text-xs text-cyan-100 hover:border-cyan-500/60"
+                      >
+                        PubMed
+                      </a>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] text-cyan-100/75">
+                        Suggested link questions
+                      </p>
+                      <ul className="space-y-1">
+                        {edgeResearchQuestions.map((question) => (
+                          <li
+                            key={question}
+                            className="text-xs text-cyan-50/90 rounded-md border border-cyan-900/40 bg-cyan-950/30 px-2.5 py-1.5"
+                          >
+                            {question}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] text-cyan-100/75">Paper search angles</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {edgeResearchSearchAngles.map((angle) => (
+                          <a
+                            key={angle}
+                            href={`https://scholar.google.com/scholar?q=${encodeURIComponent(angle)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="rounded-full border border-cyan-800/50 px-2 py-1 text-[11px] text-cyan-100 hover:border-cyan-500/60"
+                          >
+                            {angle}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <p className="text-sm text-gray-300 leading-relaxed">
                   {explainLink(selectedLink)}
@@ -2593,7 +2835,28 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-2">
-                    <p className="text-xs text-gray-400">Edge notes</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-gray-400">Edge notes</p>
+                      <span className="text-[11px] text-gray-500">
+                        {edgeNotesWordCount} words · {edgeNotesCharCount} chars
+                      </span>
+                    </div>
+                    <div className="rounded-md border border-gray-800 bg-gray-800/40 p-2 space-y-1.5">
+                      <p className="text-[11px] text-gray-500">Quick note blocks</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {edgeNoteTemplates.map((template) => (
+                          <button
+                            key={template}
+                            type="button"
+                            onClick={() => handleAppendEdgeNoteTemplate(template)}
+                            disabled={edgeNotesLoading || isCombinedMapSelected}
+                            className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-blue-500/60 hover:text-blue-200 disabled:opacity-60"
+                          >
+                            {template.split(":")[0]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <textarea
                       value={edgeNotes}
                       onChange={(e) => {

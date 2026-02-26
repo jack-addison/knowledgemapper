@@ -184,6 +184,7 @@ export function buildGraph(
       id: interest.id,
       name: interest.name,
       cluster: rootToCluster.get(root)!,
+      embedding: interest.embedding,
     };
   });
 

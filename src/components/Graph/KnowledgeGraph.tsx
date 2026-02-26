@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GraphData, GraphLinkSelection } from "@/lib/types";
+import { GraphData, GraphLayoutMode, GraphLinkSelection } from "@/lib/types";
 import * as d3 from "d3-force";
+import { UMAP } from "umap-js";
 
 // Dynamic import to avoid SSR issues
 import dynamic from "next/dynamic";
@@ -39,6 +40,52 @@ function getEndpointName(endpoint: unknown): string | null {
   if (!endpoint || typeof endpoint !== "object") return null;
   const name = (endpoint as { name?: unknown }).name;
   return typeof name === "string" ? name : null;
+}
+
+function toFiniteEmbedding(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const embedding = value.filter(
+    (item) => typeof item === "number" && Number.isFinite(item)
+  );
+  return embedding.length === value.length ? embedding : null;
+}
+
+function dominantDimension(embeddings: number[][]): number | null {
+  if (embeddings.length === 0) return null;
+  const counts = new Map<number, number>();
+  for (const embedding of embeddings) {
+    counts.set(embedding.length, (counts.get(embedding.length) || 0) + 1);
+  }
+
+  let winner: number | null = null;
+  let winnerCount = -1;
+  for (const [dimension, count] of counts.entries()) {
+    if (count > winnerCount || (count === winnerCount && dimension > (winner || 0))) {
+      winner = dimension;
+      winnerCount = count;
+    }
+  }
+  return winner;
+}
+
+function hashString(input: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function createSeededRandom(seed: number): () => number {
+  let state = seed || 1;
+  return () => {
+    state += 0x6d2b79f5;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function buildNodeAnchors(data: GraphData): {
@@ -140,6 +187,79 @@ function buildNodeAnchors(data: GraphData): {
   return { anchors, strengths };
 }
 
+function buildUmapAnchors(
+  data: GraphData,
+  layoutSignature: string
+): { anchors: Map<string, { x: number; y: number }>; strengths: Map<string, number> } | null {
+  const embeddingRows = data.nodes
+    .map((node) => {
+      const embedding = toFiniteEmbedding(node.embedding);
+      if (!embedding) return null;
+      return { id: node.id, embedding };
+    })
+    .filter((item): item is { id: string; embedding: number[] } => Boolean(item));
+
+  const dimension = dominantDimension(embeddingRows.map((row) => row.embedding));
+  if (!dimension) return null;
+
+  const alignedRows = embeddingRows.filter(
+    (row) => row.embedding.length === dimension
+  );
+  if (alignedRows.length < 4) return null;
+
+  const nNeighbors = Math.max(3, Math.min(14, alignedRows.length - 1));
+  const random = createSeededRandom(hashString(layoutSignature));
+
+  let embedding2D: number[][];
+  try {
+    const umap = new UMAP({
+      nComponents: 2,
+      nNeighbors,
+      minDist: 0.12,
+      random,
+    });
+    embedding2D = umap.fit(alignedRows.map((row) => row.embedding));
+  } catch {
+    return null;
+  }
+
+  if (!Array.isArray(embedding2D) || embedding2D.length !== alignedRows.length) {
+    return null;
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of embedding2D) {
+    if (!Array.isArray(point) || point.length < 2) return null;
+    minX = Math.min(minX, point[0]);
+    maxX = Math.max(maxX, point[0]);
+    minY = Math.min(minY, point[1]);
+    maxY = Math.max(maxY, point[1]);
+  }
+
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const spread = Math.max(maxX - minX, maxY - minY, 1e-6);
+  const targetSpan = Math.max(340, Math.sqrt(alignedRows.length) * 95);
+  const scale = targetSpan / spread;
+
+  const anchors = new Map<string, { x: number; y: number }>();
+  const strengths = new Map<string, number>();
+  for (let i = 0; i < alignedRows.length; i++) {
+    const row = alignedRows[i];
+    const point = embedding2D[i];
+    anchors.set(row.id, {
+      x: (point[0] - centerX) * scale,
+      y: (point[1] - centerY) * scale,
+    });
+    strengths.set(row.id, 0.2);
+  }
+
+  return { anchors, strengths };
+}
+
 interface KnowledgeGraphProps {
   data: GraphData;
   selectedNodeId?: string | null;
@@ -147,6 +267,7 @@ interface KnowledgeGraphProps {
   selectedLink?: Pick<GraphLinkSelection, "sourceId" | "targetId"> | null;
   linkForceScale?: number;
   fastSettle?: boolean;
+  layoutMode?: GraphLayoutMode;
   fullscreen?: boolean;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onLinkClick?: (link: GraphLinkSelection) => void;
@@ -161,6 +282,7 @@ export default function KnowledgeGraph({
   selectedLink,
   linkForceScale = 1,
   fastSettle = false,
+  layoutMode = "classic",
   fullscreen = false,
   onNodeClick,
   onLinkClick,
@@ -180,8 +302,16 @@ export default function KnowledgeGraph({
   });
   const [forcesApplied, setForcesApplied] = useState(0);
   const clusterSignature = useMemo(
-    () => data.nodes.map((node) => `${node.id}:${node.cluster}`).sort().join("|"),
-    [data.nodes]
+    () =>
+      `${layoutMode}|` +
+      data.nodes
+        .map(
+          (node) =>
+            `${node.id}:${node.cluster}:${Array.isArray(node.embedding) ? node.embedding.length : 0}`
+        )
+        .sort()
+        .join("|"),
+    [data.nodes, layoutMode]
   );
   const clusterOffsets = useMemo(
     () =>
@@ -191,24 +321,32 @@ export default function KnowledgeGraph({
     [clusterOffsetState, clusterSignature]
   );
   const nodeAnchorLayout = useMemo(() => {
-    const layout = buildNodeAnchors(data);
-    if (Object.keys(clusterOffsets).length === 0) {
-      return layout;
-    }
+    const classicLayout = buildNodeAnchors(data);
+    const umapLayout =
+      layoutMode === "umap" ? buildUmapAnchors(data, clusterSignature) : null;
+    const hasOffsets = Object.keys(clusterOffsets).length > 0;
+    const anchors = new Map<string, { x: number; y: number }>();
+    const strengths = new Map<string, number>();
 
     for (const node of data.nodes) {
-      const offset = clusterOffsets[node.cluster];
-      if (!offset) continue;
-      const existing = layout.anchors.get(node.id);
-      if (!existing) continue;
-      layout.anchors.set(node.id, {
-        x: existing.x + offset.x,
-        y: existing.y + offset.y,
+      const base =
+        umapLayout?.anchors.get(node.id) ||
+        classicLayout.anchors.get(node.id) || { x: 0, y: 0 };
+      const strength =
+        umapLayout?.strengths.get(node.id) ||
+        classicLayout.strengths.get(node.id) ||
+        0.1;
+      const offset = hasOffsets ? clusterOffsets[node.cluster] : null;
+
+      anchors.set(node.id, {
+        x: base.x + (offset?.x || 0),
+        y: base.y + (offset?.y || 0),
       });
+      strengths.set(node.id, strength);
     }
 
-    return layout;
-  }, [data, clusterOffsets]);
+    return { anchors, strengths };
+  }, [data, clusterOffsets, layoutMode, clusterSignature]);
   const safeLinkForceScale = Math.max(0.1, Math.min(4, linkForceScale));
   const alphaDecay = fastSettle ? 0.035 : 0.01;
   const velocityDecay = fastSettle ? 0.5 : 0.3;

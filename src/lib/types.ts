@@ -1,3 +1,5 @@
+export type GraphLayoutMode = "classic" | "umap";
+
 export interface Interest {
   id: string;
   user_id: string;
@@ -23,6 +25,7 @@ export interface GraphNode {
   id: string;
   name: string;
   cluster: number;
+  embedding?: number[] | null;
 }
 
 export interface GraphLink {
