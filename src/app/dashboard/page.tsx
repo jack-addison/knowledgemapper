@@ -30,6 +30,7 @@ const DEFAULT_LINK_FORCE_SCALE = 3;
 const MAP_LAYOUT_STORAGE_PREFIX = "km-map-layout-settings:";
 const COMBINED_MAP_ID = "__combined__";
 const COMBINED_MAP_NAME = "Combined (All Maps)";
+const PANEL_TRANSITION_MS = 180;
 
 function isCombinedMapId(mapId: string | null): boolean {
   return mapId === COMBINED_MAP_ID;
@@ -353,7 +354,15 @@ export default function DashboardPage() {
     name: string;
   } | null>(null);
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
+  const topicCloseTimerRef = useRef<number | null>(null);
+  const edgeCloseTimerRef = useRef<number | null>(null);
+  const topicEnterRafRef = useRef<number | null>(null);
+  const edgeEnterRafRef = useRef<number | null>(null);
   const [isMapFullscreen, setIsMapFullscreen] = useState(false);
+  const [topicPanelClosing, setTopicPanelClosing] = useState(false);
+  const [edgePanelClosing, setEdgePanelClosing] = useState(false);
+  const [topicPanelEntering, setTopicPanelEntering] = useState(false);
+  const [edgePanelEntering, setEdgePanelEntering] = useState(false);
 
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
@@ -362,6 +371,10 @@ export default function DashboardPage() {
   const [tdaHealth, setTdaHealth] = useState<TdaMapHealth | null>(null);
   const [tdaLoading, setTdaLoading] = useState(false);
   const [tdaError, setTdaError] = useState("");
+  const selectedTopicId = selectedTopic?.id || "";
+  const selectedLinkKey = selectedLink
+    ? `${selectedLink.sourceId}::${selectedLink.targetId}`
+    : "";
 
   // Connection mode state
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
@@ -505,7 +518,12 @@ export default function DashboardPage() {
   useEffect(() => {
     function syncMapFullscreenState() {
       if (typeof document === "undefined") return;
-      setIsMapFullscreen(document.fullscreenElement === mapViewportRef.current);
+      const container = mapViewportRef.current;
+      if (!container) {
+        setIsMapFullscreen(false);
+        return;
+      }
+      setIsMapFullscreen(document.fullscreenElement === container);
     }
 
     syncMapFullscreenState();
@@ -513,6 +531,51 @@ export default function DashboardPage() {
     return () =>
       document.removeEventListener("fullscreenchange", syncMapFullscreenState);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (topicCloseTimerRef.current !== null) {
+        window.clearTimeout(topicCloseTimerRef.current);
+      }
+      if (edgeCloseTimerRef.current !== null) {
+        window.clearTimeout(edgeCloseTimerRef.current);
+      }
+      if (topicEnterRafRef.current !== null) {
+        window.cancelAnimationFrame(topicEnterRafRef.current);
+      }
+      if (edgeEnterRafRef.current !== null) {
+        window.cancelAnimationFrame(edgeEnterRafRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedTopicId) return;
+
+    setTopicPanelClosing(false);
+    setTopicPanelEntering(true);
+    if (topicEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(topicEnterRafRef.current);
+    }
+    topicEnterRafRef.current = window.requestAnimationFrame(() => {
+      setTopicPanelEntering(false);
+      topicEnterRafRef.current = null;
+    });
+  }, [selectedTopicId, isMapFullscreen]);
+
+  useEffect(() => {
+    if (!selectedLinkKey) return;
+
+    setEdgePanelClosing(false);
+    setEdgePanelEntering(true);
+    if (edgeEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(edgeEnterRafRef.current);
+    }
+    edgeEnterRafRef.current = window.requestAnimationFrame(() => {
+      setEdgePanelEntering(false);
+      edgeEnterRafRef.current = null;
+    });
+  }, [selectedLinkKey, isMapFullscreen]);
 
   useEffect(() => {
     if (!selectedMapId) {
@@ -600,8 +663,30 @@ export default function DashboardPage() {
     if (mapsLoading) return;
 
     setInitialLoading(true);
+    if (topicCloseTimerRef.current !== null) {
+      window.clearTimeout(topicCloseTimerRef.current);
+      topicCloseTimerRef.current = null;
+    }
+    if (topicEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(topicEnterRafRef.current);
+      topicEnterRafRef.current = null;
+    }
+    if (edgeCloseTimerRef.current !== null) {
+      window.clearTimeout(edgeCloseTimerRef.current);
+      edgeCloseTimerRef.current = null;
+    }
+    if (edgeEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(edgeEnterRafRef.current);
+      edgeEnterRafRef.current = null;
+    }
+    setTopicPanelClosing(false);
+    setTopicPanelEntering(false);
+    setEdgePanelClosing(false);
+    setEdgePanelEntering(false);
     setSelectedTopic(null);
+    setTopicPanelExpanded(false);
     setSelectedLink(null);
+    setEdgePanelExpanded(false);
     setNotesTopic(null);
     setConnectingFrom(null);
     setConnectingResult(null);
@@ -748,7 +833,18 @@ export default function DashboardPage() {
     const sourceExists = interests.some((interest) => interest.id === selectedLink.sourceId);
     const targetExists = interests.some((interest) => interest.id === selectedLink.targetId);
     if (!sourceExists || !targetExists) {
+      if (edgeCloseTimerRef.current !== null) {
+        window.clearTimeout(edgeCloseTimerRef.current);
+        edgeCloseTimerRef.current = null;
+      }
+      if (edgeEnterRafRef.current !== null) {
+        window.cancelAnimationFrame(edgeEnterRafRef.current);
+        edgeEnterRafRef.current = null;
+      }
+      setEdgePanelClosing(false);
+      setEdgePanelEntering(false);
       setSelectedLink(null);
+      setEdgePanelExpanded(false);
     }
   }, [interests, selectedLink]);
 
@@ -1104,7 +1200,7 @@ export default function DashboardPage() {
       });
       if (res.ok) {
         if (selectedTopic?.name === name) {
-          setSelectedTopic(null);
+          closeTopicPanelImmediate();
         }
         if (notesTopic?.id === interest.id) {
           setNotesTopic(null);
@@ -1135,6 +1231,68 @@ export default function DashboardPage() {
     await fetchInterests();
   }
 
+  function closeTopicPanelImmediate() {
+    if (topicCloseTimerRef.current !== null) {
+      window.clearTimeout(topicCloseTimerRef.current);
+      topicCloseTimerRef.current = null;
+    }
+    if (topicEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(topicEnterRafRef.current);
+      topicEnterRafRef.current = null;
+    }
+    setTopicPanelClosing(false);
+    setTopicPanelEntering(false);
+    setSelectedTopic(null);
+    setTopicPanelExpanded(false);
+  }
+
+  function closeEdgePanelImmediate() {
+    if (edgeCloseTimerRef.current !== null) {
+      window.clearTimeout(edgeCloseTimerRef.current);
+      edgeCloseTimerRef.current = null;
+    }
+    if (edgeEnterRafRef.current !== null) {
+      window.cancelAnimationFrame(edgeEnterRafRef.current);
+      edgeEnterRafRef.current = null;
+    }
+    setEdgePanelClosing(false);
+    setEdgePanelEntering(false);
+    setSelectedLink(null);
+    setEdgePanelExpanded(false);
+  }
+
+  function closeTopicPanelSmooth() {
+    if (!selectedTopic) {
+      closeTopicPanelImmediate();
+      return;
+    }
+
+    if (topicCloseTimerRef.current !== null) {
+      window.clearTimeout(topicCloseTimerRef.current);
+    }
+
+    setTopicPanelClosing(true);
+    topicCloseTimerRef.current = window.setTimeout(() => {
+      closeTopicPanelImmediate();
+    }, PANEL_TRANSITION_MS);
+  }
+
+  function closeEdgePanelSmooth() {
+    if (!selectedLink) {
+      closeEdgePanelImmediate();
+      return;
+    }
+
+    if (edgeCloseTimerRef.current !== null) {
+      window.clearTimeout(edgeCloseTimerRef.current);
+    }
+
+    setEdgePanelClosing(true);
+    edgeCloseTimerRef.current = window.setTimeout(() => {
+      closeEdgePanelImmediate();
+    }, PANEL_TRANSITION_MS);
+  }
+
   function handleStartConnect(topicName: string) {
     if (isCombinedMapId(selectedMapId)) {
       setError("Combined map is read-only. Create connections in a specific map.");
@@ -1142,10 +1300,8 @@ export default function DashboardPage() {
     }
     setConnectingFrom(topicName);
     setConnectingResult(null);
-    setSelectedLink(null);
-    setEdgePanelExpanded(false);
-    setSelectedTopic(null);
-    setTopicPanelExpanded(false);
+    closeEdgePanelImmediate();
+    closeTopicPanelImmediate();
     setNotesTopic(null);
   }
 
@@ -1205,12 +1361,15 @@ export default function DashboardPage() {
     }
 
     setConnectingResult(null);
-    setSelectedLink(null);
-    setEdgePanelExpanded(false);
+    closeEdgePanelImmediate();
+    if (topicCloseTimerRef.current !== null) {
+      window.clearTimeout(topicCloseTimerRef.current);
+      topicCloseTimerRef.current = null;
+      setTopicPanelClosing(false);
+    }
     const isSameNode = selectedTopic?.id === nodeId;
     if (isSameNode) {
-      setSelectedTopic(null);
-      setTopicPanelExpanded(false);
+      closeTopicPanelSmooth();
       setNotesTopic(null);
       return;
     }
@@ -1227,9 +1386,13 @@ export default function DashboardPage() {
   function handleLinkClick(link: GraphLinkSelection) {
     if (connectingFrom) return;
     setConnectingResult(null);
-    setSelectedTopic(null);
-    setTopicPanelExpanded(false);
+    closeTopicPanelImmediate();
     setNotesTopic(null);
+    if (edgeCloseTimerRef.current !== null) {
+      window.clearTimeout(edgeCloseTimerRef.current);
+      edgeCloseTimerRef.current = null;
+      setEdgePanelClosing(false);
+    }
     setSelectedLink(link);
     if (isMapFullscreen) {
       setEdgePanelExpanded(true);
@@ -2015,10 +2178,8 @@ export default function DashboardPage() {
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
               onBackgroundClick={() => {
-                setSelectedTopic(null);
-                setTopicPanelExpanded(false);
-                setSelectedLink(null);
-                setEdgePanelExpanded(false);
+                closeTopicPanelSmooth();
+                closeEdgePanelSmooth();
                 setNotesTopic(null);
               }}
               reservedWidth={0}
@@ -2033,18 +2194,30 @@ export default function DashboardPage() {
             <div
               className={
                 isMapFullscreen
-                  ? "absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4"
-                  : `absolute top-3 right-3 z-20 overflow-y-auto ${
+                  ? `absolute inset-0 z-30 flex items-center justify-center p-4 transition-opacity duration-200 ease-out ${
+                      topicPanelClosing || topicPanelEntering
+                        ? "bg-black/0 opacity-0 pointer-events-none"
+                        : "bg-black/45 opacity-100"
+                    }`
+                  : `absolute top-3 right-3 z-20 overflow-y-auto transition-all duration-200 ease-out ${
                       topicPanelExpanded
                         ? "w-[44rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
                         : "w-72 max-h-[calc(100%-1.5rem)]"
+                    } ${
+                      topicPanelClosing || topicPanelEntering
+                        ? "opacity-0 translate-y-2 pointer-events-none"
+                        : "opacity-100 translate-y-0"
                     }`
               }
             >
               <div
                 className={
                   isMapFullscreen
-                    ? "w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto"
+                    ? `w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto transition-all duration-200 ease-out ${
+                        topicPanelClosing || topicPanelEntering
+                          ? "opacity-0 translate-y-2 scale-[0.985]"
+                          : "opacity-100 translate-y-0 scale-100"
+                      }`
                     : ""
                 }
               >
@@ -2062,8 +2235,7 @@ export default function DashboardPage() {
                     setTopicPanelExpanded((prevExpanded) => !prevExpanded)
                   }
                   onClose={() => {
-                    setSelectedTopic(null);
-                    setTopicPanelExpanded(false);
+                    closeTopicPanelSmooth();
                   }}
                   onExpand={handleExpand}
                   onRemove={(name) => {
@@ -2076,8 +2248,7 @@ export default function DashboardPage() {
                       return;
                     }
                     setNotesTopic(selectedTopic);
-                    setSelectedTopic(null);
-                    setTopicPanelExpanded(false);
+                    closeTopicPanelImmediate();
                   }}
                   researchEvidence={selectedTopicEvidence}
                   researchEvidenceLoading={selectedTopicEvidenceLoading}
@@ -2113,18 +2284,30 @@ export default function DashboardPage() {
             <div
               className={
                 isMapFullscreen
-                  ? "absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4"
-                  : `absolute top-3 right-3 z-20 overflow-y-auto ${
+                  ? `absolute inset-0 z-30 flex items-center justify-center p-4 transition-opacity duration-200 ease-out ${
+                      edgePanelClosing || edgePanelEntering
+                        ? "bg-black/0 opacity-0 pointer-events-none"
+                        : "bg-black/45 opacity-100"
+                    }`
+                  : `absolute top-3 right-3 z-20 overflow-y-auto transition-all duration-200 ease-out ${
                       edgePanelExpanded
                         ? "w-[48rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
                         : "w-80 max-h-[calc(100%-1.5rem)]"
+                    } ${
+                      edgePanelClosing || edgePanelEntering
+                        ? "opacity-0 translate-y-2 pointer-events-none"
+                        : "opacity-100 translate-y-0"
                     }`
               }
             >
               <aside
                 className={`border border-gray-700 rounded-lg bg-gray-900 p-4 space-y-4 ${
                   isMapFullscreen
-                    ? "w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto"
+                    ? `w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto transition-all duration-200 ease-out ${
+                        edgePanelClosing || edgePanelEntering
+                          ? "opacity-0 translate-y-2 scale-[0.985]"
+                          : "opacity-100 translate-y-0 scale-100"
+                      }`
                     : ""
                 }`}
               >
@@ -2148,8 +2331,7 @@ export default function DashboardPage() {
                     </button>
                     <button
                       onClick={() => {
-                        setSelectedLink(null);
-                        setEdgePanelExpanded(false);
+                        closeEdgePanelSmooth();
                       }}
                       className="text-gray-400 hover:text-white text-sm"
                     >
@@ -2462,12 +2644,11 @@ export default function DashboardPage() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
+                      closeEdgePanelImmediate();
                       setSelectedTopic({
                         id: selectedLink.sourceId,
                         name: selectedLink.sourceName,
                       });
-                      setSelectedLink(null);
-                      setEdgePanelExpanded(false);
                     }}
                     className="flex-1 px-3 py-1.5 rounded-md border border-gray-700 hover:border-blue-500/60 text-sm text-gray-200"
                   >
@@ -2475,12 +2656,11 @@ export default function DashboardPage() {
                   </button>
                   <button
                     onClick={() => {
+                      closeEdgePanelImmediate();
                       setSelectedTopic({
                         id: selectedLink.targetId,
                         name: selectedLink.targetName,
                       });
-                      setSelectedLink(null);
-                      setEdgePanelExpanded(false);
                     }}
                     className="flex-1 px-3 py-1.5 rounded-md border border-gray-700 hover:border-blue-500/60 text-sm text-gray-200"
                   >
