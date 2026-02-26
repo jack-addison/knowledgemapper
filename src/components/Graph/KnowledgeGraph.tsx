@@ -146,6 +146,7 @@ interface KnowledgeGraphProps {
   connectingFromName?: string | null;
   selectedLink?: Pick<GraphLinkSelection, "sourceId" | "targetId"> | null;
   linkForceScale?: number;
+  fastSettle?: boolean;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onLinkClick?: (link: GraphLinkSelection) => void;
   onBackgroundClick?: () => void;
@@ -158,6 +159,7 @@ export default function KnowledgeGraph({
   connectingFromName,
   selectedLink,
   linkForceScale = 1,
+  fastSettle = false,
   onNodeClick,
   onLinkClick,
   onBackgroundClick,
@@ -206,6 +208,9 @@ export default function KnowledgeGraph({
     return layout;
   }, [data, clusterOffsets]);
   const safeLinkForceScale = Math.max(0.1, Math.min(4, linkForceScale));
+  const alphaDecay = fastSettle ? 0.035 : 0.01;
+  const velocityDecay = fastSettle ? 0.5 : 0.3;
+  const cooldownTicks = fastSettle ? 120 : undefined;
   const nodeClusterMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const node of data.nodes) {
@@ -586,8 +591,9 @@ export default function KnowledgeGraph({
         onLinkClick={handleLinkClick}
         onBackgroundClick={handleBackgroundClick}
         backgroundColor="rgba(0,0,0,0)"
-        d3AlphaDecay={0.01}
-        d3VelocityDecay={0.3}
+        d3AlphaDecay={alphaDecay}
+        d3VelocityDecay={velocityDecay}
+        cooldownTicks={cooldownTicks}
       />
     </div>
   );

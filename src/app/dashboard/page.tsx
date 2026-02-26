@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Navbar from "@/components/Layout/Navbar";
 import InterestPicker from "@/components/InterestPicker/InterestPicker";
 import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
@@ -24,9 +24,137 @@ import {
   DEFAULT_CLUSTER_THRESHOLD,
   DEFAULT_SIMILARITY_THRESHOLD,
 } from "@/lib/graph";
+import { computeTdaMapHealth } from "@/lib/tda";
 
 const DEFAULT_LINK_FORCE_SCALE = 3;
 const MAP_LAYOUT_STORAGE_PREFIX = "km-map-layout-settings:";
+const COMBINED_MAP_ID = "__combined__";
+const COMBINED_MAP_NAME = "Combined (All Maps)";
+
+function isCombinedMapId(mapId: string | null): boolean {
+  return mapId === COMBINED_MAP_ID;
+}
+
+function normalizeCombinedTopicKey(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function buildCombinedInterestId(topicKey: string): string {
+  return `combined:${encodeURIComponent(topicKey)}`;
+}
+
+function averageEmbeddings(embeddings: number[][]): number[] | null {
+  if (embeddings.length === 0) return null;
+
+  const dimensionCounts = new Map<number, number>();
+  for (const embedding of embeddings) {
+    dimensionCounts.set(
+      embedding.length,
+      (dimensionCounts.get(embedding.length) || 0) + 1
+    );
+  }
+
+  let preferredDimension = 0;
+  let preferredCount = 0;
+  for (const [dimension, count] of dimensionCounts.entries()) {
+    if (count > preferredCount) {
+      preferredDimension = dimension;
+      preferredCount = count;
+    }
+  }
+
+  if (preferredDimension <= 0) return null;
+
+  const compatible = embeddings.filter(
+    (embedding) => embedding.length === preferredDimension
+  );
+  if (compatible.length === 0) return null;
+
+  const average = new Array(preferredDimension).fill(0);
+  for (const embedding of compatible) {
+    for (let i = 0; i < preferredDimension; i++) {
+      average[i] += embedding[i];
+    }
+  }
+
+  for (let i = 0; i < preferredDimension; i++) {
+    average[i] /= compatible.length;
+  }
+
+  return average;
+}
+
+function mergeInterestsForCombined(
+  interests: Interest[],
+  mapNameById: Map<string, string>
+): {
+  mergedInterests: Interest[];
+  membersByMergedId: Record<string, Interest[]>;
+} {
+  const grouped = new Map<string, Interest[]>();
+  for (const interest of interests) {
+    const key = normalizeCombinedTopicKey(interest.name);
+    if (!key) continue;
+    const existing = grouped.get(key) || [];
+    existing.push(interest);
+    grouped.set(key, existing);
+  }
+
+  const mergedInterests: Interest[] = [];
+  const membersByMergedId: Record<string, Interest[]> = {};
+
+  for (const [topicKey, members] of grouped.entries()) {
+    const sortedMembers = [...members].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at)
+    );
+    const representative = sortedMembers[0];
+    const mergedId = buildCombinedInterestId(topicKey);
+
+    const notesByMap = sortedMembers
+      .map((member) => {
+        const note = member.notes?.trim();
+        if (!note) return null;
+        const mapLabel = mapNameById.get(member.map_id) || member.map_id;
+        return `${mapLabel}:\n${note}`;
+      })
+      .filter((item): item is string => Boolean(item));
+
+    const uniqueRelatedTopics = Array.from(
+      new Set(
+        sortedMembers.flatMap((member) =>
+          (member.related_topics || [])
+            .map((topic) => topic.trim())
+            .filter((topic) => topic.length > 0)
+        )
+      )
+    ).slice(0, 50);
+
+    const mergedEmbedding = averageEmbeddings(
+      sortedMembers
+        .map((member) => member.embedding)
+        .filter(
+          (embedding): embedding is number[] =>
+            Array.isArray(embedding) && embedding.length > 0
+        )
+    );
+
+    mergedInterests.push({
+      id: mergedId,
+      user_id: representative.user_id,
+      map_id: COMBINED_MAP_ID,
+      name: representative.name.trim() || representative.name,
+      embedding: mergedEmbedding,
+      related_topics: uniqueRelatedTopics,
+      notes: notesByMap.join("\n\n"),
+      created_at: representative.created_at,
+    });
+
+    membersByMergedId[mergedId] = sortedMembers;
+  }
+
+  mergedInterests.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return { mergedInterests, membersByMergedId };
+}
 
 interface MapLayoutSettings {
   similarityThreshold: number;
@@ -155,6 +283,9 @@ export default function DashboardPage() {
   const [creatingMap, setCreatingMap] = useState(false);
 
   const [interests, setInterests] = useState<Interest[]>([]);
+  const [combinedInterestMembers, setCombinedInterestMembers] = useState<
+    Record<string, Interest[]>
+  >({});
   const [graphData, setGraphData] = useState<GraphData>({
     nodes: [],
     links: [],
@@ -225,6 +356,7 @@ export default function DashboardPage() {
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
   const [linkForceScale, setLinkForceScale] = useState(DEFAULT_LINK_FORCE_SCALE);
+  const [fastSettleMode, setFastSettleMode] = useState(true);
   const [tdaHealth, setTdaHealth] = useState<TdaMapHealth | null>(null);
   const [tdaLoading, setTdaLoading] = useState(false);
   const [tdaError, setTdaError] = useState("");
@@ -236,6 +368,26 @@ export default function DashboardPage() {
     reason: string;
   } | null>(null);
   const [connectingLoading, setConnectingLoading] = useState(false);
+  const mapNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of maps) {
+      map.set(item.id, item.name);
+    }
+    return map;
+  }, [maps]);
+
+  const selectedLinkMapId = useMemo(() => {
+    if (isCombinedMapId(selectedMapId)) return null;
+    if (!selectedLink) return null;
+    const source = interests.find(
+      (interest) => interest.id === selectedLink.sourceId
+    );
+    const target = interests.find(
+      (interest) => interest.id === selectedLink.targetId
+    );
+    if (!source || !target) return null;
+    return source.map_id === target.map_id ? source.map_id : null;
+  }, [interests, selectedLink, selectedMapId]);
 
   const rebuildGraph = useCallback(
     (data: Interest[], similarity: number, cluster: number) => {
@@ -269,16 +421,22 @@ export default function DashboardPage() {
       setMaps(data);
 
       setSelectedMapId((prev) => {
-        if (prev && data.some((map) => map.id === prev)) {
+        if (
+          prev &&
+          (isCombinedMapId(prev) || data.some((map) => map.id === prev))
+        ) {
           return prev;
         }
 
         const saved = getStoredString("km-active-map-id", "");
-        if (saved && data.some((map) => map.id === saved)) {
+        if (
+          saved &&
+          (isCombinedMapId(saved) || data.some((map) => map.id === saved))
+        ) {
           return saved;
         }
 
-        return data[0]?.id || null;
+        return data[0]?.id || COMBINED_MAP_ID;
       });
     } catch (err) {
       console.error("Failed to fetch maps:", err);
@@ -298,25 +456,35 @@ export default function DashboardPage() {
     }
 
     try {
-      const res = await fetch(
-        `/api/interests?mapId=${encodeURIComponent(selectedMapId)}`
-      );
+      const interestsUrl = isCombinedMapId(selectedMapId)
+        ? "/api/interests"
+        : `/api/interests?mapId=${encodeURIComponent(selectedMapId)}`;
+      const res = await fetch(interestsUrl);
       if (res.ok) {
-        const data = await res.json();
-        setInterests(data);
+        const data: Interest[] = await res.json();
+        if (isCombinedMapId(selectedMapId)) {
+          const merged = mergeInterestsForCombined(data, mapNameById);
+          setInterests(merged.mergedInterests);
+          setCombinedInterestMembers(merged.membersByMergedId);
+        } else {
+          setInterests(data);
+          setCombinedInterestMembers({});
+        }
       } else {
         const data = await res.json().catch(() => ({}));
         setError(data.error || "Failed to fetch interests");
         setInterests([]);
+        setCombinedInterestMembers({});
       }
     } catch (err) {
       console.error("Failed to fetch interests:", err);
       setError("Failed to fetch interests — check console for details");
       setInterests([]);
+      setCombinedInterestMembers({});
     } finally {
       setInitialLoading(false);
     }
-  }, [selectedMapId]);
+  }, [mapNameById, selectedMapId]);
 
   useEffect(() => {
     fetchMaps();
@@ -354,6 +522,21 @@ export default function DashboardPage() {
       setTdaHealth(null);
       setTdaError("");
       setTdaLoading(false);
+      return;
+    }
+
+    if (isCombinedMapId(selectedMapId)) {
+      setTdaLoading(true);
+      setTdaError("");
+      try {
+        const health = computeTdaMapHealth(interests);
+        setTdaHealth(health);
+      } catch {
+        setTdaHealth(null);
+        setTdaError("Failed to analyze combined map topology");
+      } finally {
+        setTdaLoading(false);
+      }
       return;
     }
 
@@ -436,15 +619,81 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!selectedTopic || !selectedMapId) return;
-
-    const params = new URLSearchParams({
-      mapId: selectedMapId,
-      interestId: selectedTopic.id,
-    });
+    const activeTopicId = selectedTopic.id;
+    const activeMapId = selectedMapId;
 
     let cancelled = false;
 
     async function loadPersistedTopicEvidence() {
+      if (isCombinedMapId(activeMapId)) {
+        const members = combinedInterestMembers[activeTopicId] || [];
+        if (members.length === 0) {
+          if (!cancelled) {
+            setSavedTopicEvidence([]);
+            setSavedTopicEvidenceError("");
+            setSavedTopicEvidenceLoading(false);
+          }
+          return;
+        }
+
+        setSavedTopicEvidenceLoading(true);
+        setSavedTopicEvidenceError("");
+        try {
+          const settled = await Promise.allSettled(
+            members.map(async (member) => {
+              const params = new URLSearchParams({
+                mapId: member.map_id,
+                interestId: member.id,
+              });
+              const res = await fetch(`/api/interests/evidence?${params.toString()}`);
+              if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.error || "Failed to load saved topic evidence");
+              }
+              const data: SavedInterestEvidence[] = await res.json();
+              return data;
+            })
+          );
+
+          if (cancelled) return;
+
+          const mergedById = new Map<string, SavedInterestEvidence>();
+          let hadErrors = false;
+          for (const result of settled) {
+            if (result.status === "fulfilled") {
+              for (const source of result.value) {
+                mergedById.set(source.id, source);
+              }
+            } else {
+              hadErrors = true;
+            }
+          }
+
+          const mergedSources = Array.from(mergedById.values()).sort((a, b) =>
+            b.created_at.localeCompare(a.created_at)
+          );
+          setSavedTopicEvidence(mergedSources);
+          setSavedTopicEvidenceError(
+            hadErrors ? "Some saved topic evidence could not be loaded." : ""
+          );
+        } catch {
+          if (!cancelled) {
+            setSavedTopicEvidence([]);
+            setSavedTopicEvidenceError("Failed to load saved topic evidence");
+          }
+        } finally {
+          if (!cancelled) {
+            setSavedTopicEvidenceLoading(false);
+          }
+        }
+        return;
+      }
+
+      const params = new URLSearchParams({
+        mapId: activeMapId,
+        interestId: activeTopicId,
+      });
+
       setSavedTopicEvidenceLoading(true);
       setSavedTopicEvidenceError("");
       try {
@@ -478,7 +727,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedTopic, selectedMapId]);
+  }, [combinedInterestMembers, selectedMapId, selectedTopic]);
 
   useEffect(() => {
     if (!selectedLink) return;
@@ -520,9 +769,23 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!selectedLink || !selectedMapId) return;
 
+    const effectiveMapId = isCombinedMapId(selectedMapId)
+      ? selectedLinkMapId
+      : selectedMapId;
+    if (!effectiveMapId) {
+      setSavedEdgeEvidence([]);
+      setSavedEdgeEvidenceError("");
+      setSavedEdgeEvidenceLoading(false);
+      setEdgeNotes("");
+      setEdgeNotesError("");
+      setEdgeNotesLoading(false);
+      setEdgeNotesSavedAt(null);
+      return;
+    }
+
     const pair = normalizeEdgePair(selectedLink.sourceId, selectedLink.targetId);
     const params = new URLSearchParams({
-      mapId: selectedMapId,
+      mapId: effectiveMapId,
       interestAId: pair.a,
       interestBId: pair.b,
     });
@@ -584,7 +847,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedLink, selectedMapId]);
+  }, [selectedLink, selectedMapId, selectedLinkMapId]);
 
   const applyRecommendedLayoutSettings = useCallback(
     (similarity: number, cluster: number, linkForce: number) => {
@@ -663,6 +926,10 @@ export default function DashboardPage() {
 
   async function handleEnableSharing(regenerate = false) {
     if (!selectedMapId) return;
+    if (isCombinedMapId(selectedMapId)) {
+      setShareError("Combined map cannot be shared. Share an individual map instead.");
+      return;
+    }
 
     setShareActionLoading(true);
     setShareError("");
@@ -720,6 +987,10 @@ export default function DashboardPage() {
 
   async function handleDisableSharing() {
     if (!selectedMapId) return;
+    if (isCombinedMapId(selectedMapId)) {
+      setShareError("Combined map cannot be shared.");
+      return;
+    }
 
     setShareActionLoading(true);
     setShareError("");
@@ -775,6 +1046,10 @@ export default function DashboardPage() {
       setError("Create or select a map first");
       return;
     }
+    if (isCombinedMapId(selectedMapId)) {
+      setError("Combined map is automatic. Add topics in a specific map.");
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -799,6 +1074,11 @@ export default function DashboardPage() {
   }
 
   async function handleRemoveInterest(name: string) {
+    if (isCombinedMapId(selectedMapId)) {
+      setError("Combined map is read-only. Remove topics in a specific map.");
+      return;
+    }
+
     const interest = interests.find((i) => i.name === name);
     if (!interest) return;
 
@@ -826,6 +1106,9 @@ export default function DashboardPage() {
     if (!selectedMapId) {
       throw new Error("No map selected");
     }
+    if (isCombinedMapId(selectedMapId)) {
+      throw new Error("Combined map is read-only");
+    }
 
     const res = await fetch("/api/interests/expand", {
       method: "POST",
@@ -839,6 +1122,10 @@ export default function DashboardPage() {
   }
 
   function handleStartConnect(topicName: string) {
+    if (isCombinedMapId(selectedMapId)) {
+      setError("Combined map is read-only. Create connections in a specific map.");
+      return;
+    }
     setConnectingFrom(topicName);
     setConnectingResult(null);
     setSelectedLink(null);
@@ -850,6 +1137,10 @@ export default function DashboardPage() {
 
   async function handleCompleteConnect(topicB: string) {
     if (!connectingFrom || connectingFrom === topicB || !selectedMapId) return;
+    if (isCombinedMapId(selectedMapId)) {
+      setError("Combined map is read-only. Create connections in a specific map.");
+      return;
+    }
 
     setConnectingLoading(true);
     setConnectingResult(null);
@@ -908,7 +1199,9 @@ export default function DashboardPage() {
   }
 
   function getActiveTopicParams() {
-    if (!selectedTopic || !selectedMapId) return null;
+    if (!selectedTopic || !selectedMapId || isCombinedMapId(selectedMapId)) {
+      return null;
+    }
     return {
       mapId: selectedMapId,
       interestId: selectedTopic.id,
@@ -949,6 +1242,13 @@ export default function DashboardPage() {
   async function handleSaveTopicEvidenceSource(
     source: EvidenceSource
   ): Promise<boolean> {
+    if (isCombinedMapId(selectedMapId)) {
+      setSavedTopicEvidenceError(
+        "Combined map is read-only. Save evidence in a specific map."
+      );
+      return false;
+    }
+
     const topicParams = getActiveTopicParams();
     if (!topicParams) return false;
 
@@ -997,6 +1297,13 @@ export default function DashboardPage() {
   }
 
   async function handleDeleteSavedTopicEvidence(id: string) {
+    if (isCombinedMapId(selectedMapId)) {
+      setSavedTopicEvidenceError(
+        "Combined map is read-only. Remove evidence in a specific map."
+      );
+      return;
+    }
+
     const topicParams = getActiveTopicParams();
     if (!topicParams) return;
 
@@ -1061,7 +1368,9 @@ export default function DashboardPage() {
   }
 
   function getActiveEdgeParams() {
-    if (!selectedLink || !selectedMapId) return null;
+    if (!selectedLink || !selectedMapId || isCombinedMapId(selectedMapId)) {
+      return null;
+    }
     const pair = normalizeEdgePair(selectedLink.sourceId, selectedLink.targetId);
     return {
       mapId: selectedMapId,
@@ -1071,6 +1380,13 @@ export default function DashboardPage() {
   }
 
   async function handleSaveEvidenceSource(source: EvidenceSource): Promise<boolean> {
+    if (isCombinedMapId(selectedMapId)) {
+      setSavedEdgeEvidenceError(
+        "Combined map is read-only. Save edge evidence in a specific map."
+      );
+      return false;
+    }
+
     const edgeParams = getActiveEdgeParams();
     if (!edgeParams) return false;
 
@@ -1173,6 +1489,13 @@ export default function DashboardPage() {
   }
 
   async function handleDeleteSavedEvidence(id: string) {
+    if (isCombinedMapId(selectedMapId)) {
+      setSavedEdgeEvidenceError(
+        "Combined map is read-only. Remove edge evidence in a specific map."
+      );
+      return;
+    }
+
     const edgeParams = getActiveEdgeParams();
     if (!edgeParams) return;
 
@@ -1203,6 +1526,13 @@ export default function DashboardPage() {
   }
 
   async function handleSaveEdgeNotes() {
+    if (isCombinedMapId(selectedMapId)) {
+      setEdgeNotesError(
+        "Combined map is read-only. Save edge notes in a specific map."
+      );
+      return;
+    }
+
     const edgeParams = getActiveEdgeParams();
     if (!edgeParams) return;
 
@@ -1235,6 +1565,10 @@ export default function DashboardPage() {
   }
 
   async function handleSaveNotes(topicId: string, notes: string) {
+    if (isCombinedMapId(selectedMapId)) {
+      throw new Error("Combined map is read-only.");
+    }
+
     const res = await fetch("/api/interests", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -1256,8 +1590,16 @@ export default function DashboardPage() {
   const showTopicDetail = Boolean(selectedTopic && !connectingFrom);
   const showNotesSidebar = Boolean(notesTopic && !connectingFrom);
   const showLinkDetail = Boolean(selectedLink && !connectingFrom);
+  const combinedMapOption: KnowledgeMap = {
+    id: COMBINED_MAP_ID,
+    user_id: "",
+    name: COMBINED_MAP_NAME,
+    created_at: "",
+  };
+  const mapOptions: KnowledgeMap[] = [combinedMapOption, ...maps];
+  const isCombinedMapSelected = isCombinedMapId(selectedMapId);
   const selectedMap = selectedMapId
-    ? maps.find((map) => map.id === selectedMapId) || null
+    ? mapOptions.find((map) => map.id === selectedMapId) || null
     : null;
   const selectedMapShareUrl =
     selectedMap?.share_slug && selectedMap.is_public
@@ -1314,8 +1656,7 @@ export default function DashboardPage() {
                 onChange={(e) => setSelectedMapId(e.target.value || null)}
                 className="px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-gray-200 focus:outline-none focus:border-blue-500"
               >
-                {maps.length === 0 && <option value="">No maps</option>}
-                {maps.map((map) => (
+                {mapOptions.map((map) => (
                   <option key={map.id} value={map.id}>
                     {map.name}
                   </option>
@@ -1339,7 +1680,7 @@ export default function DashboardPage() {
 	            </div>
 	          </div>
 
-	          {selectedMapId && (
+	          {selectedMapId && !isCombinedMapSelected && (
 	            <div className="flex flex-wrap items-center gap-2 mb-2">
 	              <span className="text-xs text-gray-400">Share</span>
 	              {selectedMap?.is_public && selectedMap?.share_slug ? (
@@ -1389,12 +1730,19 @@ export default function DashboardPage() {
 	            </div>
 	          )}
 
+          {isCombinedMapSelected && (
+            <p className="text-xs text-cyan-300 mb-2">
+              Combined map is automatic and read-only. Edit individual maps to update
+              it.
+            </p>
+          )}
+
 	          {error && <p className="text-red-400 text-sm mb-2">{error}</p>}
 
           <InterestPicker
             interests={interests.map((i) => i.name)}
             onAdd={handleAddInterest}
-            loading={loading || !selectedMapId}
+            loading={loading || !selectedMapId || isCombinedMapSelected}
           />
         </div>
 
@@ -1417,6 +1765,17 @@ export default function DashboardPage() {
           <span className="text-xs text-gray-500">
             Higher means only stronger topic similarities create links.
           </span>
+          <button
+            onClick={() => setFastSettleMode((prev) => !prev)}
+            className={`ml-auto px-2.5 py-1 rounded-md border text-xs transition-colors ${
+              fastSettleMode
+                ? "border-cyan-500/70 text-cyan-200 bg-cyan-500/10"
+                : "border-gray-700 text-gray-300 hover:border-gray-500"
+            }`}
+            title="Reduce post-drag drift by making the simulation settle faster."
+          >
+            Fast settle: {fastSettleMode ? "On" : "Off"}
+          </button>
         </div>
 
         <details className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2">
@@ -1585,6 +1944,7 @@ export default function DashboardPage() {
               selectedLink={selectedLink}
               connectingFromName={connectingFrom}
               linkForceScale={linkForceScale}
+              fastSettle={fastSettleMode}
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
               onBackgroundClick={() => {
@@ -1617,6 +1977,7 @@ export default function DashboardPage() {
                   interests.find((i) => i.id === selectedTopic.id)?.related_topics ||
                   []
                 }
+                readOnly={isCombinedMapSelected}
                 connectingFrom={connectingFrom}
                 isExpanded={topicPanelExpanded}
                 onToggleExpand={() =>
@@ -1632,6 +1993,10 @@ export default function DashboardPage() {
                 }}
                 onStartConnect={handleStartConnect}
                 onOpenNotes={() => {
+                  if (isCombinedMapSelected) {
+                    setError("Combined map is read-only. Edit notes in a specific map.");
+                    return;
+                  }
                   setNotesTopic(selectedTopic);
                   setSelectedTopic(null);
                   setTopicPanelExpanded(false);
@@ -1793,10 +2158,16 @@ export default function DashboardPage() {
                                   </a>
                                   <button
                                     onClick={() => handleSaveEvidenceSource(source)}
-                                    disabled={saved || saving}
+                                    disabled={isCombinedMapSelected || saved || saving}
                                     className="px-2 py-1 rounded-md border border-emerald-600/70 text-emerald-300 text-xs disabled:opacity-60"
                                   >
-                                    {saved ? "Saved" : saving ? "Saving..." : "Save"}
+                                    {isCombinedMapSelected
+                                      ? "Read-only"
+                                      : saved
+                                        ? "Saved"
+                                        : saving
+                                          ? "Saving..."
+                                          : "Save"}
                                   </button>
                                 </div>
                                 <p className="text-xs text-gray-400">
@@ -1824,66 +2195,68 @@ export default function DashboardPage() {
                     </div>
                   )}
 
-                  <details className="rounded-md border border-blue-800/40 bg-blue-950/10 px-3 py-2">
-                    <summary className="cursor-pointer select-none text-xs text-blue-200">
-                      Add your own paper link
-                    </summary>
-                    <div className="mt-2 space-y-2">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {!isCombinedMapSelected && (
+                    <details className="rounded-md border border-blue-800/40 bg-blue-950/10 px-3 py-2">
+                      <summary className="cursor-pointer select-none text-xs text-blue-200">
+                        Add your own paper link
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            value={manualEdgeEvidenceTitle}
+                            onChange={(e) => setManualEdgeEvidenceTitle(e.target.value)}
+                            placeholder="Paper title *"
+                            className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                          />
+                          <input
+                            type="text"
+                            value={manualEdgeEvidenceUrl}
+                            onChange={(e) => setManualEdgeEvidenceUrl(e.target.value)}
+                            placeholder="URL or DOI link *"
+                            className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                          />
+                          <input
+                            type="text"
+                            value={manualEdgeEvidenceJournal}
+                            onChange={(e) => setManualEdgeEvidenceJournal(e.target.value)}
+                            placeholder="Journal / venue (optional)"
+                            className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                          />
+                          <input
+                            type="text"
+                            value={manualEdgeEvidenceYear}
+                            onChange={(e) => setManualEdgeEvidenceYear(e.target.value)}
+                            placeholder="Year (optional)"
+                            className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
                         <input
                           type="text"
-                          value={manualEdgeEvidenceTitle}
-                          onChange={(e) => setManualEdgeEvidenceTitle(e.target.value)}
-                          placeholder="Paper title *"
-                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                          value={manualEdgeEvidenceAuthors}
+                          onChange={(e) => setManualEdgeEvidenceAuthors(e.target.value)}
+                          placeholder="Authors (optional, comma-separated)"
+                          className="w-full rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
                         />
-                        <input
-                          type="text"
-                          value={manualEdgeEvidenceUrl}
-                          onChange={(e) => setManualEdgeEvidenceUrl(e.target.value)}
-                          placeholder="URL or DOI link *"
-                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                        <textarea
+                          value={manualEdgeEvidenceReason}
+                          onChange={(e) => setManualEdgeEvidenceReason(e.target.value)}
+                          placeholder="Why this paper supports this connection (optional)"
+                          className="w-full min-h-[64px] rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
                         />
-                        <input
-                          type="text"
-                          value={manualEdgeEvidenceJournal}
-                          onChange={(e) => setManualEdgeEvidenceJournal(e.target.value)}
-                          placeholder="Journal / venue (optional)"
-                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                        />
-                        <input
-                          type="text"
-                          value={manualEdgeEvidenceYear}
-                          onChange={(e) => setManualEdgeEvidenceYear(e.target.value)}
-                          placeholder="Year (optional)"
-                          className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                        />
+                        {manualEdgeEvidenceError && (
+                          <p className="text-xs text-red-300">{manualEdgeEvidenceError}</p>
+                        )}
+                        <button
+                          onClick={handleSaveManualEdgeEvidence}
+                          disabled={manualEdgeEvidenceSaving}
+                          className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-xs text-white"
+                        >
+                          {manualEdgeEvidenceSaving ? "Saving..." : "Save paper link"}
+                        </button>
                       </div>
-                      <input
-                        type="text"
-                        value={manualEdgeEvidenceAuthors}
-                        onChange={(e) => setManualEdgeEvidenceAuthors(e.target.value)}
-                        placeholder="Authors (optional, comma-separated)"
-                        className="w-full rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                      />
-                      <textarea
-                        value={manualEdgeEvidenceReason}
-                        onChange={(e) => setManualEdgeEvidenceReason(e.target.value)}
-                        placeholder="Why this paper supports this connection (optional)"
-                        className="w-full min-h-[64px] rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                      />
-                      {manualEdgeEvidenceError && (
-                        <p className="text-xs text-red-300">{manualEdgeEvidenceError}</p>
-                      )}
-                      <button
-                        onClick={handleSaveManualEdgeEvidence}
-                        disabled={manualEdgeEvidenceSaving}
-                        className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-xs text-white"
-                      >
-                        {manualEdgeEvidenceSaving ? "Saving..." : "Save paper link"}
-                      </button>
-                    </div>
-                  </details>
+                    </details>
+                  )}
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -1915,10 +2288,15 @@ export default function DashboardPage() {
                               </a>
                               <button
                                 onClick={() => handleDeleteSavedEvidence(source.id)}
-                                disabled={deletingEvidenceId === source.id}
+                                disabled={
+                                  isCombinedMapSelected ||
+                                  deletingEvidenceId === source.id
+                                }
                                 className="text-[11px] text-red-300 hover:text-red-200 disabled:opacity-50"
                               >
-                                {deletingEvidenceId === source.id
+                                {isCombinedMapSelected
+                                  ? "Read-only"
+                                  : deletingEvidenceId === source.id
                                   ? "Removing..."
                                   : "Remove"}
                               </button>
@@ -1952,7 +2330,7 @@ export default function DashboardPage() {
                         if (edgeNotesError) setEdgeNotesError("");
                       }}
                       placeholder="Capture claims, caveats, and why this link matters..."
-                      disabled={edgeNotesLoading}
+                      disabled={edgeNotesLoading || isCombinedMapSelected}
                       className="w-full min-h-[100px] rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
                     />
                     <div className="flex items-center justify-between gap-2">
@@ -1975,10 +2353,18 @@ export default function DashboardPage() {
                       </span>
                       <button
                         onClick={handleSaveEdgeNotes}
-                        disabled={edgeNotesLoading || edgeNotesSaving}
+                        disabled={
+                          edgeNotesLoading ||
+                          edgeNotesSaving ||
+                          isCombinedMapSelected
+                        }
                         className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-sm text-white"
                       >
-                        {edgeNotesSaving ? "Saving..." : "Save edge notes"}
+                        {isCombinedMapSelected
+                          ? "Read-only"
+                          : edgeNotesSaving
+                            ? "Saving..."
+                            : "Save edge notes"}
                       </button>
                     </div>
                   </div>
