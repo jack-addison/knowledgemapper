@@ -1,36 +1,92 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# KnowledgeMapper
 
-## Getting Started
+KnowledgeMapper is a visual research workspace for exploring topics, mapping connections, and building evidence-backed learning trails.
 
-First, run the development server:
+## What It Does
+
+- Build multiple named knowledge maps per user.
+- Visualize topic clusters and semantic links in an interactive graph.
+- Expand topics with AI-generated related areas.
+- Generate bridge topics between two selected nodes.
+- Save notes at both levels:
+  - Node notes: topic-specific notes.
+  - Edge notes: notes about why two topics are connected.
+- Collect research evidence:
+  - Node evidence: papers relevant to a single topic.
+  - Edge evidence: papers relevant to a relationship between two topics.
+
+## Stack
+
+- Next.js (App Router) + React + TypeScript
+- Supabase Auth + Postgres
+- OpenAI API (embeddings + topic generation)
+- OpenAlex API (paper lookup for evidence)
+- Tailwind CSS
+
+## Local Development
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create `.env.local`:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+OPENAI_API_KEY=your_openai_key
+```
+
+3. Start dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Required Database Tables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+At minimum, the app expects these tables:
 
-## Learn More
+- `maps`
+- `interests`
+- `edge_notes`
+- `edge_evidence`
+- `interest_evidence`
 
-To learn more about Next.js, take a look at the following resources:
+`interests.embedding` should be a vector-compatible field if you want semantic graph links.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Core Routes
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- App pages:
+  - `/dashboard` map workspace
+  - `/discover` topic recommendations
+  - `/profile` analytics and account summary
+  - `/about` product and usage guide
+- API routes:
+  - `/api/maps`
+  - `/api/interests`
+  - `/api/interests/expand`
+  - `/api/interests/connect`
+  - `/api/interests/evidence`
+  - `/api/edges/notes`
+  - `/api/edges/evidence`
+  - `/api/research/node-evidence`
+  - `/api/research/evidence`
 
-## Deploy on Vercel
+## Deployment (Vercel)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+For this Next.js app, default Vercel settings are usually enough:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Install Command: auto-detected (`npm install`)
+- Build Command: auto-detected (`next build`)
+- Output Directory: auto-detected
+
+Set environment variables in Vercel Project Settings:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `OPENAI_API_KEY`
