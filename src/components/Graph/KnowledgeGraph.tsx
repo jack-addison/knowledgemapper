@@ -147,6 +147,7 @@ interface KnowledgeGraphProps {
   selectedLink?: Pick<GraphLinkSelection, "sourceId" | "targetId"> | null;
   linkForceScale?: number;
   fastSettle?: boolean;
+  fullscreen?: boolean;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onLinkClick?: (link: GraphLinkSelection) => void;
   onBackgroundClick?: () => void;
@@ -160,6 +161,7 @@ export default function KnowledgeGraph({
   selectedLink,
   linkForceScale = 1,
   fastSettle = false,
+  fullscreen = false,
   onNodeClick,
   onLinkClick,
   onBackgroundClick,
@@ -269,19 +271,25 @@ export default function KnowledgeGraph({
 
   useEffect(() => {
     function handleResize() {
-      const sidebar = reservedWidth ?? 0;
+      const sidebar = fullscreen ? 0 : reservedWidth ?? 0;
       const containerWidth =
         containerRef.current?.clientWidth ??
         Math.min(window.innerWidth - 32, 1800);
+      const containerHeight = fullscreen
+        ? window.innerHeight - 24
+        : window.innerHeight - 200;
+
       setDimensions({
         width: Math.max(containerWidth - sidebar, 320),
-        height: Math.max(window.innerHeight - 200, 560),
+        height: fullscreen
+          ? Math.max(containerHeight, 320)
+          : Math.max(containerHeight, 560),
       });
     }
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [reservedWidth]);
+  }, [reservedWidth, fullscreen]);
 
   // Build a quick lookup: nodeId -> cluster color
   const nodeColorMap = useMemo(() => {

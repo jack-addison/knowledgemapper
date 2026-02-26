@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Navbar from "@/components/Layout/Navbar";
 import InterestPicker from "@/components/InterestPicker/InterestPicker";
 import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
@@ -352,6 +352,8 @@ export default function DashboardPage() {
     id: string;
     name: string;
   } | null>(null);
+  const mapViewportRef = useRef<HTMLDivElement | null>(null);
+  const [isMapFullscreen, setIsMapFullscreen] = useState(false);
 
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
@@ -499,6 +501,18 @@ export default function DashboardPage() {
     setShareError("");
     setShareFeedback("");
   }, [selectedMapId]);
+
+  useEffect(() => {
+    function syncMapFullscreenState() {
+      if (typeof document === "undefined") return;
+      setIsMapFullscreen(document.fullscreenElement === mapViewportRef.current);
+    }
+
+    syncMapFullscreenState();
+    document.addEventListener("fullscreenchange", syncMapFullscreenState);
+    return () =>
+      document.removeEventListener("fullscreenchange", syncMapFullscreenState);
+  }, []);
 
   useEffect(() => {
     if (!selectedMapId) {
@@ -1166,6 +1180,24 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleToggleMapFullscreen() {
+    const container = mapViewportRef.current;
+    if (!container || typeof document === "undefined") return;
+
+    try {
+      if (document.fullscreenElement === container) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      await container.requestFullscreen();
+      setTopicPanelExpanded(true);
+      setEdgePanelExpanded(true);
+    } catch {
+      setError("Fullscreen is blocked by this browser/session.");
+    }
+  }
+
   function handleNodeClick(nodeId: string, nodeName: string) {
     if (connectingFrom) {
       handleCompleteConnect(nodeName);
@@ -1184,6 +1216,9 @@ export default function DashboardPage() {
     }
 
     setSelectedTopic({ id: nodeId, name: nodeName });
+    if (isMapFullscreen) {
+      setTopicPanelExpanded(true);
+    }
     if (notesTopic && notesTopic.id !== nodeId) {
       setNotesTopic(null);
     }
@@ -1196,6 +1231,9 @@ export default function DashboardPage() {
     setTopicPanelExpanded(false);
     setNotesTopic(null);
     setSelectedLink(link);
+    if (isMapFullscreen) {
+      setEdgePanelExpanded(true);
+    }
   }
 
   function getActiveTopicParams() {
@@ -1590,6 +1628,19 @@ export default function DashboardPage() {
   const showTopicDetail = Boolean(selectedTopic && !connectingFrom);
   const showNotesSidebar = Boolean(notesTopic && !connectingFrom);
   const showLinkDetail = Boolean(selectedLink && !connectingFrom);
+
+  useEffect(() => {
+    if (isMapFullscreen && showTopicDetail) {
+      setTopicPanelExpanded(true);
+    }
+  }, [isMapFullscreen, showTopicDetail]);
+
+  useEffect(() => {
+    if (isMapFullscreen && showLinkDetail) {
+      setEdgePanelExpanded(true);
+    }
+  }, [isMapFullscreen, showLinkDetail]);
+
   const combinedMapOption: KnowledgeMap = {
     id: COMBINED_MAP_ID,
     user_id: "",
@@ -1936,7 +1987,22 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <div className="relative flex-1 min-h-0">
+        <div
+          ref={mapViewportRef}
+          className={`relative flex-1 min-h-0 ${
+            isMapFullscreen ? "bg-gray-950 p-3" : ""
+          }`}
+        >
+          {selectedMapId && (
+            <button
+              type="button"
+              onClick={handleToggleMapFullscreen}
+              className="absolute top-3 left-3 z-40 rounded-md border border-gray-700 bg-gray-950/90 px-2 py-1 text-[11px] text-gray-200 hover:border-gray-500 hover:text-white transition-colors"
+            >
+              {isMapFullscreen ? "Exit full size" : "Full size"}
+            </button>
+          )}
+
           {selectedMapId ? (
             <KnowledgeGraph
               data={graphData}
@@ -1945,6 +2011,7 @@ export default function DashboardPage() {
               connectingFromName={connectingFrom}
               linkForceScale={linkForceScale}
               fastSettle={fastSettleMode}
+              fullscreen={isMapFullscreen}
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
               onBackgroundClick={() => {
@@ -1964,55 +2031,67 @@ export default function DashboardPage() {
 
           {showTopicDetail && selectedTopic && (
             <div
-              className={`absolute top-3 right-3 z-20 overflow-y-auto ${
-                topicPanelExpanded
-                  ? "w-[44rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
-                  : "w-72 max-h-[calc(100%-1.5rem)]"
-              }`}
+              className={
+                isMapFullscreen
+                  ? "absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4"
+                  : `absolute top-3 right-3 z-20 overflow-y-auto ${
+                      topicPanelExpanded
+                        ? "w-[44rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
+                        : "w-72 max-h-[calc(100%-1.5rem)]"
+                    }`
+              }
             >
-              <TopicDetail
-                key={selectedTopic.id}
-                name={selectedTopic.name}
-                relatedTopics={
-                  interests.find((i) => i.id === selectedTopic.id)?.related_topics ||
-                  []
+              <div
+                className={
+                  isMapFullscreen
+                    ? "w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto"
+                    : ""
                 }
-                readOnly={isCombinedMapSelected}
-                connectingFrom={connectingFrom}
-                isExpanded={topicPanelExpanded}
-                onToggleExpand={() =>
-                  setTopicPanelExpanded((prevExpanded) => !prevExpanded)
-                }
-                onClose={() => {
-                  setSelectedTopic(null);
-                  setTopicPanelExpanded(false);
-                }}
-                onExpand={handleExpand}
-                onRemove={(name) => {
-                  handleRemoveInterest(name);
-                }}
-                onStartConnect={handleStartConnect}
-                onOpenNotes={() => {
-                  if (isCombinedMapSelected) {
-                    setError("Combined map is read-only. Edit notes in a specific map.");
-                    return;
+              >
+                <TopicDetail
+                  key={selectedTopic.id}
+                  name={selectedTopic.name}
+                  relatedTopics={
+                    interests.find((i) => i.id === selectedTopic.id)?.related_topics ||
+                    []
                   }
-                  setNotesTopic(selectedTopic);
-                  setSelectedTopic(null);
-                  setTopicPanelExpanded(false);
-                }}
-                researchEvidence={selectedTopicEvidence}
-                researchEvidenceLoading={selectedTopicEvidenceLoading}
-                researchEvidenceError={selectedTopicEvidenceError}
-                savedResearchEvidence={savedTopicEvidence}
-                savedResearchEvidenceLoading={savedTopicEvidenceLoading}
-                savedResearchEvidenceError={savedTopicEvidenceError}
-                savingResearchEvidenceUrl={savingTopicEvidenceUrl}
-                deletingResearchEvidenceId={deletingTopicEvidenceId}
-                onLoadResearchEvidence={handleLoadTopicEvidence}
-                onSaveResearchEvidence={handleSaveTopicEvidenceSource}
-                onDeleteResearchEvidence={handleDeleteSavedTopicEvidence}
-              />
+                  readOnly={isCombinedMapSelected}
+                  connectingFrom={connectingFrom}
+                  isExpanded={topicPanelExpanded}
+                  onToggleExpand={() =>
+                    setTopicPanelExpanded((prevExpanded) => !prevExpanded)
+                  }
+                  onClose={() => {
+                    setSelectedTopic(null);
+                    setTopicPanelExpanded(false);
+                  }}
+                  onExpand={handleExpand}
+                  onRemove={(name) => {
+                    handleRemoveInterest(name);
+                  }}
+                  onStartConnect={handleStartConnect}
+                  onOpenNotes={() => {
+                    if (isCombinedMapSelected) {
+                      setError("Combined map is read-only. Edit notes in a specific map.");
+                      return;
+                    }
+                    setNotesTopic(selectedTopic);
+                    setSelectedTopic(null);
+                    setTopicPanelExpanded(false);
+                  }}
+                  researchEvidence={selectedTopicEvidence}
+                  researchEvidenceLoading={selectedTopicEvidenceLoading}
+                  researchEvidenceError={selectedTopicEvidenceError}
+                  savedResearchEvidence={savedTopicEvidence}
+                  savedResearchEvidenceLoading={savedTopicEvidenceLoading}
+                  savedResearchEvidenceError={savedTopicEvidenceError}
+                  savingResearchEvidenceUrl={savingTopicEvidenceUrl}
+                  deletingResearchEvidenceId={deletingTopicEvidenceId}
+                  onLoadResearchEvidence={handleLoadTopicEvidence}
+                  onSaveResearchEvidence={handleSaveTopicEvidenceSource}
+                  onDeleteResearchEvidence={handleDeleteSavedTopicEvidence}
+                />
+              </div>
             </div>
           )}
 
@@ -2032,13 +2111,23 @@ export default function DashboardPage() {
 
           {showLinkDetail && selectedLink && (
             <div
-              className={`absolute top-3 right-3 z-20 overflow-y-auto ${
-                edgePanelExpanded
-                  ? "w-[48rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
-                  : "w-80 max-h-[calc(100%-1.5rem)]"
-              }`}
+              className={
+                isMapFullscreen
+                  ? "absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-4"
+                  : `absolute top-3 right-3 z-20 overflow-y-auto ${
+                      edgePanelExpanded
+                        ? "w-[48rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
+                        : "w-80 max-h-[calc(100%-1.5rem)]"
+                    }`
+              }
             >
-              <aside className="border border-gray-700 rounded-lg bg-gray-900 p-4 space-y-4">
+              <aside
+                className={`border border-gray-700 rounded-lg bg-gray-900 p-4 space-y-4 ${
+                  isMapFullscreen
+                    ? "w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto"
+                    : ""
+                }`}
+              >
                 <div className="flex items-start justify-between">
                   <div>
                     <h3 className="text-lg font-semibold text-white">
