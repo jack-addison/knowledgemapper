@@ -2445,68 +2445,8 @@ export default function DashboardPage() {
                   </option>
                 ))}
               </select>
-              <button
-                onClick={handleDeleteMap}
-                disabled={!selectedMapId || isCombinedMapSelected || deletingMap}
-                className="h-9 w-9 rounded-md border border-red-500/60 text-red-300 hover:text-red-200 hover:border-red-400/70 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
-                title="Delete selected map"
-                aria-label="Delete selected map"
-              >
-                {deletingMap ? (
-                  <span className="text-[10px]">...</span>
-                ) : (
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4.5 w-4.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M3 6h18" />
-                    <path d="M8 6V4h8v2" />
-                    <path d="M6.5 6l1 14h9l1-14" />
-                    <path d="M10 10v7" />
-                    <path d="M14 10v7" />
-                  </svg>
-                )}
-              </button>
-              <button
-                onClick={handleDownloadMapExport}
-                disabled={
-                  !selectedMapId ||
-                  isCombinedMapSelected ||
-                  mapExportLoading ||
-                  interests.length === 0
-                }
-                className="h-9 w-9 rounded-md border border-gray-700 text-gray-200 hover:border-gray-500 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
-                title="Download map export (.txt)"
-                aria-label="Download map export"
-              >
-                {mapExportLoading ? (
-                  <span className="text-[10px]">...</span>
-                ) : (
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4.5 w-4.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M12 4v10" />
-                    <path d="m8.5 11.5 3.5 3.5 3.5-3.5" />
-                    <path d="M4 18.5h16" />
-                  </svg>
-                )}
-              </button>
-
               {mapCreateOpen ? (
-                <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
+                <div className="order-1 flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
                   <input
                     type="text"
                     value={newMapName}
@@ -2552,8 +2492,11 @@ export default function DashboardPage() {
               ) : (
                 <button
                   type="button"
-                  onClick={() => setMapCreateOpen(true)}
-                  className="h-9 w-9 rounded-full border border-white/30 bg-white/5 text-lg font-medium leading-none text-white/90 shadow-lg backdrop-blur transition hover:border-cyan-400/70 hover:bg-cyan-500/10"
+                  onClick={() => {
+                    setSharePanelOpen(false);
+                    setMapCreateOpen(true);
+                  }}
+                  className="order-1 h-9 w-9 rounded-md border border-cyan-500/60 bg-cyan-500/10 text-base font-semibold leading-none text-cyan-200 transition hover:border-cyan-400/70 hover:bg-cyan-500/20"
                   title="Create new map"
                   aria-label="Create new map"
                 >
@@ -2562,7 +2505,7 @@ export default function DashboardPage() {
               )}
 
               {selectedMapId && !isCombinedMapSelected && (
-                <div ref={sharePanelRef} className="relative">
+                <div ref={sharePanelRef} className="relative order-2">
                   {sharePanelOpen ? (
                     <div className="flex flex-col gap-2 rounded-xl border border-white/20 bg-gray-950/80 px-3 py-2 shadow-xl backdrop-blur">
                       <div className="flex flex-wrap items-center gap-2">
@@ -2652,6 +2595,66 @@ export default function DashboardPage() {
                   )}
                 </div>
               )}
+
+              <button
+                onClick={handleDownloadMapExport}
+                disabled={
+                  !selectedMapId ||
+                  isCombinedMapSelected ||
+                  mapExportLoading ||
+                  interests.length === 0
+                }
+                className="order-3 h-9 w-9 rounded-md border border-gray-700 text-gray-200 hover:border-gray-500 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
+                title="Download map export (.txt)"
+                aria-label="Download map export"
+              >
+                {mapExportLoading ? (
+                  <span className="text-[10px]">...</span>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4.5 w-4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 4v10" />
+                    <path d="m8.5 11.5 3.5 3.5 3.5-3.5" />
+                    <path d="M4 18.5h16" />
+                  </svg>
+                )}
+              </button>
+              <button
+                onClick={handleDeleteMap}
+                disabled={!selectedMapId || isCombinedMapSelected || deletingMap}
+                className="order-4 h-9 w-9 rounded-md border border-red-500/60 text-red-300 hover:text-red-200 hover:border-red-400/70 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
+                title="Delete selected map"
+                aria-label="Delete selected map"
+              >
+                {deletingMap ? (
+                  <span className="text-[10px]">...</span>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4.5 w-4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4h8v2" />
+                    <path d="M6.5 6l1 14h9l1-14" />
+                    <path d="M10 10v7" />
+                    <path d="M14 10v7" />
+                  </svg>
+                )}
+              </button>
 	            </div>
 	          </div>
 
@@ -2914,9 +2917,43 @@ export default function DashboardPage() {
             <button
               type="button"
               onClick={handleToggleMapFullscreen}
-              className="absolute top-3 left-3 z-40 rounded-md border border-gray-700 bg-gray-950/90 px-2 py-1 text-[11px] text-gray-200 hover:border-gray-500 hover:text-white transition-colors"
+              className="absolute top-3 left-3 z-40 h-9 w-9 rounded-md border border-gray-700 bg-gray-950/90 text-gray-200 hover:border-gray-500 hover:text-white transition-colors flex items-center justify-center"
+              title={isMapFullscreen ? "Minimise map view" : "Maximise map view"}
+              aria-label={isMapFullscreen ? "Minimise map view" : "Maximise map view"}
             >
-              {isMapFullscreen ? "Exit full size" : "Full size"}
+              {isMapFullscreen ? (
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4.5 w-4.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="4 14 10 14 10 20" />
+                  <polyline points="20 10 14 10 14 4" />
+                  <line x1="14" y1="10" x2="21" y2="3" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              ) : (
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4.5 w-4.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              )}
             </button>
           )}
 

@@ -609,9 +609,11 @@ export default function GraphAssistantPanel({
         <button
           type="button"
           onClick={() => setIsOpen(true)}
-          className={`absolute z-40 rounded-md border border-cyan-500/70 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-500/20 ${dockOffsetClass}`}
+          className={`absolute z-40 h-10 w-10 rounded-full border border-cyan-500/70 bg-cyan-500/10 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 ${dockOffsetClass}`}
+          title="AI"
+          aria-label="Open AI panel"
         >
-          AI assistant
+          AI
         </button>
       )}
 
