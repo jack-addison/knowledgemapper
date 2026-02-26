@@ -4,6 +4,42 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+interface RecommendationItem {
+  name: string;
+  reason: string;
+}
+
+function normalizeRecommendations(payload: unknown): RecommendationItem[] {
+  let items: unknown[] = [];
+
+  if (Array.isArray(payload)) {
+    items = payload;
+  } else if (payload && typeof payload === "object") {
+    const obj = payload as Record<string, unknown>;
+    if (Array.isArray(obj.recommendations)) {
+      items = obj.recommendations;
+    } else if (Array.isArray(obj.items)) {
+      items = obj.items;
+    }
+  }
+
+  return items
+    .map((item) => {
+      const obj =
+        item && typeof item === "object"
+          ? (item as Record<string, unknown>)
+          : {};
+      const name = typeof obj.name === "string" ? obj.name.trim() : "";
+      const reason = typeof obj.reason === "string" ? obj.reason.trim() : "";
+      return { name, reason };
+    })
+    .filter((item) => item.name.length > 0)
+    .map((item) => ({
+      name: item.name,
+      reason: item.reason || "A strong conceptual fit with your current map.",
+    }));
+}
+
 export async function generateEmbedding(text: string): Promise<number[]> {
   const response = await openai.embeddings.create({
     model: "text-embedding-3-small",
@@ -21,7 +57,7 @@ export async function generateRecommendations(
       {
         role: "system",
         content:
-          "You are a knowledge recommendation engine. Given a list of interests, suggest 5 new topics the user might enjoy. Return JSON array with objects containing 'name' and 'reason' fields. Only return the JSON array, no other text.",
+          'You are a knowledge recommendation engine. Given a list of interests, suggest exactly 5 new topics the user might enjoy. Return JSON object with key "recommendations", where the value is an array of objects containing "name" and "reason". Do not include topics already listed by the user.',
       },
       {
         role: "user",
@@ -36,7 +72,7 @@ export async function generateRecommendations(
 
   try {
     const parsed = JSON.parse(content);
-    return parsed.recommendations || parsed;
+    return normalizeRecommendations(parsed);
   } catch {
     return [];
   }

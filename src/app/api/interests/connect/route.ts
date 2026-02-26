@@ -10,6 +10,20 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+async function validateUserMap(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  userId: string,
+  mapId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("maps")
+    .select("id")
+    .eq("id", mapId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  return !error && Boolean(data);
+}
+
 export async function POST(request: NextRequest) {
   const supabase = await createServerSupabaseClient();
   const {
@@ -20,13 +34,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { topicA, topicB } = await request.json();
+  const { topicA, topicB, mapId } = await request.json();
 
-  if (!topicA || !topicB) {
+  if (!topicA || !topicB || !mapId) {
     return NextResponse.json(
-      { error: "Two topic names are required" },
+      { error: "Two topic names and mapId are required" },
       { status: 400 }
     );
+  }
+
+  if (typeof mapId !== "string") {
+    return NextResponse.json({ error: "mapId is required" }, { status: 400 });
+  }
+
+  const validMap = await validateUserMap(supabase, user.id, mapId);
+  if (!validMap) {
+    return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
 
   // Ask AI for the best intersection topic
@@ -72,6 +95,7 @@ export async function POST(request: NextRequest) {
     .from("interests")
     .select("name")
     .eq("user_id", user.id)
+    .eq("map_id", mapId)
     .ilike("name", topic);
 
   if (existing && existing.length > 0) {
@@ -95,6 +119,7 @@ export async function POST(request: NextRequest) {
 
   const { error } = await supabase.from("interests").insert({
     user_id: user.id,
+    map_id: mapId,
     name: topic.trim(),
     embedding,
     related_topics,

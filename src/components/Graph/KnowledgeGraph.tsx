@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GraphData } from "@/lib/types";
+import { GraphData, GraphLinkSelection } from "@/lib/types";
 import * as d3 from "d3-force";
 
 // Dynamic import to avoid SSR issues
@@ -33,6 +33,12 @@ function getEndpointId(endpoint: unknown): string | null {
   if (!endpoint || typeof endpoint !== "object") return null;
   const id = (endpoint as { id?: unknown }).id;
   return typeof id === "string" ? id : null;
+}
+
+function getEndpointName(endpoint: unknown): string | null {
+  if (!endpoint || typeof endpoint !== "object") return null;
+  const name = (endpoint as { name?: unknown }).name;
+  return typeof name === "string" ? name : null;
 }
 
 function buildNodeAnchors(data: GraphData): {
@@ -136,8 +142,10 @@ interface KnowledgeGraphProps {
   data: GraphData;
   selectedNodeId?: string | null;
   connectingFromName?: string | null;
+  selectedLink?: Pick<GraphLinkSelection, "sourceId" | "targetId"> | null;
   linkForceScale?: number;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
+  onLinkClick?: (link: GraphLinkSelection) => void;
   onBackgroundClick?: () => void;
   reservedWidth?: number;
 }
@@ -146,8 +154,10 @@ export default function KnowledgeGraph({
   data,
   selectedNodeId,
   connectingFromName,
+  selectedLink,
   linkForceScale = 1,
   onNodeClick,
+  onLinkClick,
   onBackgroundClick,
   reservedWidth,
 }: KnowledgeGraphProps) {
@@ -228,6 +238,14 @@ export default function KnowledgeGraph({
     const map = new Map<string, string>();
     for (const node of data.nodes) {
       map.set(node.id, getClusterColor(node.cluster));
+    }
+    return map;
+  }, [data.nodes]);
+
+  const nodeNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const node of data.nodes) {
+      map.set(node.id, node.name);
     }
     return map;
   }, [data.nodes]);
@@ -369,6 +387,14 @@ export default function KnowledgeGraph({
     const sourceId = getEndpointId(source);
     const targetId = getEndpointId(target);
     if (!sourceId || !targetId) return;
+
+    const normalizedSelected = selectedLink
+      ? [selectedLink.sourceId, selectedLink.targetId].sort().join("::")
+      : null;
+    const normalizedCurrent = [sourceId, targetId].sort().join("::");
+    const isSelectedLink =
+      normalizedSelected !== null && normalizedCurrent === normalizedSelected;
+
     const inFocusedComponent =
       !hasFocus ||
       (focusedComponent?.has(sourceId) && focusedComponent?.has(targetId));
@@ -376,9 +402,11 @@ export default function KnowledgeGraph({
     const sourceColor = nodeColorMap.get(sourceId) || "#3b82f6";
     const targetColor = nodeColorMap.get(targetId) || "#3b82f6";
     const similarity = link.similarity || 0.3;
-    const alpha = inFocusedComponent
-      ? 0.15 + similarity * 0.4 // 0.15 - 0.55 opacity
-      : 0.07;
+    const alpha = isSelectedLink
+      ? 0.95
+      : inFocusedComponent
+        ? 0.15 + similarity * 0.4 // 0.15 - 0.55 opacity
+        : 0.07;
 
     let stroke: CanvasGradient | string;
     if (inFocusedComponent) {
@@ -394,13 +422,21 @@ export default function KnowledgeGraph({
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = stroke;
-    ctx.lineWidth = inFocusedComponent ? 1 + similarity * 2 : 1;
+    ctx.lineWidth = isSelectedLink
+      ? 4
+      : inFocusedComponent
+        ? 1 + similarity * 2
+        : 1;
+    if (isSelectedLink) {
+      ctx.shadowColor = "#ffffff";
+      ctx.shadowBlur = 8;
+    }
     ctx.beginPath();
     ctx.moveTo(sx, sy);
     ctx.lineTo(tx, ty);
     ctx.stroke();
     ctx.restore();
-  }, [hasFocus, focusedComponent, nodeColorMap]);
+  }, [hasFocus, focusedComponent, nodeColorMap, selectedLink]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeClick = useCallback((node: any) => {
@@ -408,6 +444,31 @@ export default function KnowledgeGraph({
       onNodeClick(node.id, node.name);
     }
   }, [onNodeClick]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleLinkClick = useCallback((link: any) => {
+    if (!onLinkClick) return;
+    const sourceId = getEndpointId(link?.source);
+    const targetId = getEndpointId(link?.target);
+    if (!sourceId || !targetId) return;
+
+    const sourceName =
+      getEndpointName(link?.source) || nodeNameMap.get(sourceId) || sourceId;
+    const targetName =
+      getEndpointName(link?.target) || nodeNameMap.get(targetId) || targetId;
+    const similarity =
+      typeof link?.similarity === "number" && Number.isFinite(link.similarity)
+        ? link.similarity
+        : 0;
+
+    onLinkClick({
+      sourceId,
+      sourceName,
+      targetId,
+      targetName,
+      similarity,
+    });
+  }, [onLinkClick, nodeNameMap]);
 
   const handleBackgroundClick = useCallback(() => {
     onBackgroundClick?.();
@@ -437,6 +498,7 @@ export default function KnowledgeGraph({
         nodeCanvasObject={nodeCanvasObject}
         linkCanvasObject={linkCanvasObject}
         onNodeClick={handleNodeClick}
+        onLinkClick={handleLinkClick}
         onBackgroundClick={handleBackgroundClick}
         backgroundColor="rgba(0,0,0,0)"
         d3AlphaDecay={0.01}

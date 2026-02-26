@@ -18,11 +18,12 @@ export default function Navbar() {
     { href: "/dashboard", label: "Map" },
     { href: "/discover", label: "Discover" },
     { href: "/profile", label: "Profile" },
+    { href: "/about", label: "About" },
   ];
 
   return (
-    <nav className="border-b border-gray-800 px-6 py-4">
-      <div className="max-w-6xl mx-auto flex items-center justify-between">
+    <nav className="border-b border-gray-800 px-4 sm:px-6 py-4">
+      <div className="w-full flex items-center justify-between">
         <Link
           href="/dashboard"
           className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent"

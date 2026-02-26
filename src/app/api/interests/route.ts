@@ -2,7 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { generateEmbedding, suggestRelatedTopics } from "@/lib/openai";
 
-export async function GET() {
+async function validateUserMap(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  userId: string,
+  mapId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("maps")
+    .select("id")
+    .eq("id", mapId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  return !error && Boolean(data);
+}
+
+export async function GET(request: NextRequest) {
   const supabase = await createServerSupabaseClient();
   const {
     data: { user },
@@ -12,11 +26,18 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: interests, error } = await supabase
+  const mapId = request.nextUrl.searchParams.get("mapId");
+  let query = supabase
     .from("interests")
     .select("*")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true });
+
+  if (mapId) {
+    query = query.eq("map_id", mapId);
+  }
+
+  const { data: interests, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -44,13 +65,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { name } = await request.json();
+  const { name, mapId } = await request.json();
 
   if (!name || typeof name !== "string") {
     return NextResponse.json(
       { error: "Interest name is required" },
       { status: 400 }
     );
+  }
+
+  if (!mapId || typeof mapId !== "string") {
+    return NextResponse.json({ error: "mapId is required" }, { status: 400 });
+  }
+
+  const validMap = await validateUserMap(supabase, user.id, mapId);
+  if (!validMap) {
+    return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
 
   // Generate embedding and related topics in parallel
@@ -72,6 +102,7 @@ export async function POST(request: NextRequest) {
     .from("interests")
     .insert({
       user_id: user.id,
+      map_id: mapId,
       name: name.trim(),
       embedding,
       related_topics,
@@ -97,13 +128,18 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { id } = await request.json();
+  const { id, mapId } = await request.json();
 
-  const { error } = await supabase
+  let query = supabase
     .from("interests")
     .delete()
     .eq("id", id)
     .eq("user_id", user.id);
+  if (typeof mapId === "string" && mapId.length > 0) {
+    query = query.eq("map_id", mapId);
+  }
+
+  const { error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
