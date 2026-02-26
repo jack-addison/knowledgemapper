@@ -2,23 +2,34 @@ import Navbar from "@/components/Layout/Navbar";
 import Link from "next/link";
 
 const workflowSteps = [
-  "Create a map for a specific research question or domain.",
-  "Add initial topics from the search box and open nodes to expand.",
-  "Use Advanced layout controls (Similarity, Cluster, Link pull) to reduce noise.",
-  "Open nodes to gather topic papers, learning links, and persistent notes.",
-  "Open edges to inspect relationship explanations, linking papers, and edge notes.",
-  "Use Download .txt beside the map selector to export node/edge evidence and notes for writing workflows.",
-  "Share a map with a read-only public link when you want feedback.",
+  "Create a named map, or open the Combined map to inspect cross-map overlap.",
+  "Add topics manually with +, or use AI Assistant (General mode) to build a new map from a prompt.",
+  "Use Extend current map with a prompt to steer what gets added next.",
+  "Open nodes and edges to save notes, attach evidence, and inspect relationship reasoning.",
+  "Use grounded assistant scope (map/node/edge) for evidence-aware answers and cited papers.",
+  "Tune Similarity, Cluster, Link pull, layout mode, and TDA recommendation to control structure.",
+  "Share a map read-only, or export Download .txt for node/edge notes + BibTeX-style entries.",
 ];
 
 const featureGroups = [
   {
-    title: "Research Workflow",
+    title: "Research Workspace",
     items: [
       "Multiple named maps",
+      "Automatic Combined map across all user maps (deduplicated topics)",
       "Node expansion and bridge-topic generation",
       "Node evidence + edge evidence trails",
       "Persistent notes on both nodes and edges",
+    ],
+  },
+  {
+    title: "AI Assistant",
+    items: [
+      "Grounded mode for map-aware answers with citations",
+      "General mode for broader ideation with optional map/node/edge focus",
+      "Build map from prompt",
+      "Prompt-driven Extend current map",
+      "Save assistant output into notes and evidence records",
     ],
   },
   {
@@ -27,8 +38,9 @@ const featureGroups = [
       "Similarity threshold to gate weak links",
       "Cluster threshold for color-group structure",
       "Link pull to tune connected-node compactness",
-      "TDA recommendation button for a starting baseline",
-      "Manual cluster dragging to keep useful regions in place",
+      "UMAP or classic layout mode",
+      "TDA recommendation baseline for layout tuning",
+      "Fast settle mode and manual cluster positioning",
     ],
   },
   {
@@ -36,9 +48,19 @@ const featureGroups = [
     items: [
       "Private maps by default",
       "Public read-only share links",
+      "Shared links carry current layout settings",
       "Recipients can view notes and saved papers",
       "Recipients can open learning links and load evidence",
       "Recipients cannot save, edit, or modify map data",
+    ],
+  },
+  {
+    title: "Map Management",
+    items: [
+      "Per-map saved layout settings",
+      "Delete map with Bin action",
+      "Combined map remains read-only by design",
+      "Fullscreen graph mode with centered detail overlays",
     ],
   },
   {
@@ -56,8 +78,10 @@ const bestPractices = [
   "Keep topic names specific and testable.",
   "Use separate maps for unrelated domains rather than forcing one giant graph.",
   "Treat node evidence as support for a concept, and edge evidence as support for a claim.",
+  "Use extension prompts to intentionally steer what the map grows toward.",
   "Use edge notes to record assumptions, caveats, and confidence level.",
   "Start with TDA recommendations, then tune manually for your use case.",
+  "Use grounded assistant mode when you need traceable, source-linked responses.",
   "Validate all suggested papers before relying on them in real outputs.",
 ];
 
@@ -69,13 +93,13 @@ export default function AboutPage() {
         <section className="space-y-3">
           <h2 className="text-3xl font-bold">About KnowledgeMapper</h2>
           <p className="text-gray-300 leading-relaxed">
-            KnowledgeMapper is a visual workspace for exploratory research. It helps
-            you map concepts, inspect why topics are connected, and keep evidence
-            attached directly to the graph structure.
+            KnowledgeMapper is a visual research workspace for building, testing,
+            and documenting topic networks. It combines map editing, evidence
+            collection, and assistant-guided expansion in one interface.
           </p>
           <p className="text-gray-400 leading-relaxed">
-            The goal is to make reasoning traceable: what each topic means, why each
-            connection exists, and what sources support both.
+            The core goal is traceability: what each topic means, why links exist,
+            and which sources support node-level and edge-level claims.
           </p>
           <div className="flex flex-wrap gap-3 pt-2">
             <Link
@@ -151,7 +175,8 @@ export default function AboutPage() {
           </p>
           <p className="text-gray-500 text-sm">
             It does not replace formal literature review, domain expertise,
-            citation-management tooling, or source-quality verification.
+            citation-management tooling, or source-quality verification. Assistant
+            outputs should be treated as drafts to validate, not final authority.
           </p>
         </section>
 
@@ -159,7 +184,8 @@ export default function AboutPage() {
           <h3 className="text-xl font-semibold">Data and Validation</h3>
           <p className="text-gray-400 leading-relaxed">
             Your maps, topics, notes, and saved evidence are tied to your account.
-            Shared links are read-only and should be enabled intentionally per map.
+            Shared links are read-only, map-specific, and can be disabled or
+            regenerated.
             Exported `.txt` files are generated client-side from your current map data.
           </p>
           <p className="text-gray-500 text-sm">

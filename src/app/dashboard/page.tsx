@@ -494,6 +494,7 @@ export default function DashboardPage() {
   const [maps, setMaps] = useState<KnowledgeMap[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [newMapName, setNewMapName] = useState("");
+  const [mapCreateOpen, setMapCreateOpen] = useState(false);
   const [creatingMap, setCreatingMap] = useState(false);
   const [floatingAddOpen, setFloatingAddOpen] = useState(false);
   const [floatingAddInput, setFloatingAddInput] = useState("");
@@ -511,9 +512,11 @@ export default function DashboardPage() {
   const [mapsLoading, setMapsLoading] = useState(true);
   const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError] = useState("");
+  const [deletingMap, setDeletingMap] = useState(false);
   const [shareActionLoading, setShareActionLoading] = useState(false);
   const [shareError, setShareError] = useState("");
-  const [shareFeedback, setShareFeedback] = useState("");
+  const [sharePanelOpen, setSharePanelOpen] = useState(false);
+  const [shareToast, setShareToast] = useState("");
   const [mapExportLoading, setMapExportLoading] = useState(false);
   const [mapExportError, setMapExportError] = useState("");
   const [mapExportFeedback, setMapExportFeedback] = useState("");
@@ -572,6 +575,8 @@ export default function DashboardPage() {
     id: string;
     name: string;
   } | null>(null);
+  const sharePanelRef = useRef<HTMLDivElement | null>(null);
+  const shareToastTimerRef = useRef<number | null>(null);
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
   const topicCloseTimerRef = useRef<number | null>(null);
   const edgeCloseTimerRef = useRef<number | null>(null);
@@ -739,9 +744,28 @@ export default function DashboardPage() {
   }, [selectedMapId]);
 
   useEffect(() => {
+    setSharePanelOpen(false);
     setShareError("");
-    setShareFeedback("");
+    setShareToast("");
   }, [selectedMapId]);
+
+  useEffect(() => {
+    if (!sharePanelOpen) return;
+
+    function handleOutsidePointer(event: MouseEvent | TouchEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (sharePanelRef.current?.contains(target)) return;
+      setSharePanelOpen(false);
+    }
+
+    document.addEventListener("mousedown", handleOutsidePointer);
+    document.addEventListener("touchstart", handleOutsidePointer);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsidePointer);
+      document.removeEventListener("touchstart", handleOutsidePointer);
+    };
+  }, [sharePanelOpen]);
 
   useEffect(() => {
     setMapExportError("");
@@ -779,8 +803,22 @@ export default function DashboardPage() {
       if (edgeEnterRafRef.current !== null) {
         window.cancelAnimationFrame(edgeEnterRafRef.current);
       }
+      if (shareToastTimerRef.current !== null) {
+        window.clearTimeout(shareToastTimerRef.current);
+      }
     };
   }, []);
+
+  function showShareToast(message: string) {
+    setShareToast(message);
+    if (shareToastTimerRef.current !== null) {
+      window.clearTimeout(shareToastTimerRef.current);
+    }
+    shareToastTimerRef.current = window.setTimeout(() => {
+      setShareToast("");
+      shareToastTimerRef.current = null;
+    }, 1600);
+  }
 
   useEffect(() => {
     if (!selectedTopicId) return;
@@ -1272,11 +1310,70 @@ export default function DashboardPage() {
       setMaps((prev) => [...prev, created]);
       setSelectedMapId(created.id);
       setNewMapName("");
+      setMapCreateOpen(false);
     } catch (err) {
       console.error("Failed to create map:", err);
       setError("Failed to create map");
     } finally {
       setCreatingMap(false);
+    }
+  }
+
+  async function handleDeleteMap() {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) {
+      setError("Select a specific map to delete.");
+      return;
+    }
+
+    const mapToDelete = maps.find((map) => map.id === selectedMapId);
+    const mapName = mapToDelete?.name || "this map";
+    const confirmed = window.confirm(
+      `Delete "${mapName}"?\n\nThis will remove its topics, notes, edge notes, and saved evidence. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    const mapIdToDelete = selectedMapId;
+    const remainingMaps = maps.filter((map) => map.id !== mapIdToDelete);
+
+    setDeletingMap(true);
+    setError("");
+    setShareError("");
+    setShareToast("");
+    setMapExportError("");
+    setMapExportFeedback("");
+
+    try {
+      const res = await fetch("/api/maps", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapId: mapIdToDelete }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Failed to delete map");
+        return;
+      }
+
+      setMaps(remainingMaps);
+      setSelectedMapId((prev) =>
+        prev === mapIdToDelete ? remainingMaps[0]?.id || COMBINED_MAP_ID : prev
+      );
+
+      setSelectedTopic(null);
+      setSelectedLink(null);
+      setNotesTopic(null);
+      closeTopicPanelImmediate();
+      closeEdgePanelImmediate();
+
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(getMapLayoutStorageKey(mapIdToDelete));
+      }
+    } catch (err) {
+      console.error("Failed to delete map:", err);
+      setError("Failed to delete map");
+    } finally {
+      setDeletingMap(false);
     }
   }
 
@@ -1289,7 +1386,6 @@ export default function DashboardPage() {
 
     setShareActionLoading(true);
     setShareError("");
-    setShareFeedback("");
     try {
       const res = await fetch("/api/maps/share", {
         method: "POST",
@@ -1338,7 +1434,7 @@ export default function DashboardPage() {
         }
       }
 
-      setShareFeedback(copied ? "Share link copied." : "Sharing enabled.");
+      showShareToast(copied ? "Copied" : "Sharing enabled");
     } catch {
       setShareError("Failed to enable sharing");
     } finally {
@@ -1355,7 +1451,6 @@ export default function DashboardPage() {
 
     setShareActionLoading(true);
     setShareError("");
-    setShareFeedback("");
     try {
       const res = await fetch("/api/maps/share", {
         method: "DELETE",
@@ -1382,7 +1477,7 @@ export default function DashboardPage() {
         )
       );
 
-      setShareFeedback("Sharing disabled.");
+      showShareToast("Sharing disabled");
     } catch {
       setShareError("Failed to disable sharing");
     } finally {
@@ -1398,10 +1493,9 @@ export default function DashboardPage() {
       layoutMode,
     });
     setShareError("");
-    setShareFeedback("");
     try {
       await navigator.clipboard.writeText(shareUrl);
-      setShareFeedback("Share link copied.");
+      showShareToast("Copied");
     } catch {
       setShareError("Failed to copy share link");
     }
@@ -2352,6 +2446,34 @@ export default function DashboardPage() {
                 ))}
               </select>
               <button
+                onClick={handleDeleteMap}
+                disabled={!selectedMapId || isCombinedMapSelected || deletingMap}
+                className="h-9 w-9 rounded-md border border-red-500/60 text-red-300 hover:text-red-200 hover:border-red-400/70 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
+                title="Delete selected map"
+                aria-label="Delete selected map"
+              >
+                {deletingMap ? (
+                  <span className="text-[10px]">...</span>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4.5 w-4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4h8v2" />
+                    <path d="M6.5 6l1 14h9l1-14" />
+                    <path d="M10 10v7" />
+                    <path d="M14 10v7" />
+                  </svg>
+                )}
+              </button>
+              <button
                 onClick={handleDownloadMapExport}
                 disabled={
                   !selectedMapId ||
@@ -2359,27 +2481,185 @@ export default function DashboardPage() {
                   mapExportLoading ||
                   interests.length === 0
                 }
-                className="px-2.5 py-1.5 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500 disabled:opacity-60 disabled:cursor-not-allowed"
+                className="h-9 w-9 rounded-md border border-gray-700 text-gray-200 hover:border-gray-500 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
+                title="Download map export (.txt)"
+                aria-label="Download map export"
               >
-                {mapExportLoading ? "Preparing..." : "Download .txt"}
+                {mapExportLoading ? (
+                  <span className="text-[10px]">...</span>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4.5 w-4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 4v10" />
+                    <path d="m8.5 11.5 3.5 3.5 3.5-3.5" />
+                    <path d="M4 18.5h16" />
+                  </svg>
+                )}
               </button>
 
-              <input
-                type="text"
-                value={newMapName}
-                onChange={(e) => setNewMapName(e.target.value)}
-                placeholder="New map name"
-                className="px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-              />
-	              <button
-	                onClick={handleCreateMap}
-	                disabled={creatingMap}
-	                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-md text-sm font-medium"
-	              >
-	                {creatingMap ? "Creating..." : "Create"}
-	              </button>
+              {mapCreateOpen ? (
+                <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
+                  <input
+                    type="text"
+                    value={newMapName}
+                    onChange={(e) => setNewMapName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (!creatingMap && newMapName.trim()) {
+                          void handleCreateMap();
+                        }
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setMapCreateOpen(false);
+                        setNewMapName("");
+                      }
+                    }}
+                    placeholder="New map name..."
+                    className="w-52 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
+                    autoFocus
+                    disabled={creatingMap}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateMap()}
+                    disabled={creatingMap || !newMapName.trim()}
+                    className="rounded-full border border-cyan-500/70 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/25 disabled:opacity-50"
+                  >
+                    {creatingMap ? "Creating..." : "Create"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMapCreateOpen(false);
+                      setNewMapName("");
+                    }}
+                    className="rounded-full border border-white/20 px-2 py-1.5 text-xs text-gray-200 hover:text-white"
+                    aria-label="Close new map input"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMapCreateOpen(true)}
+                  className="h-9 w-9 rounded-full border border-white/30 bg-white/5 text-lg font-medium leading-none text-white/90 shadow-lg backdrop-blur transition hover:border-cyan-400/70 hover:bg-cyan-500/10"
+                  title="Create new map"
+                  aria-label="Create new map"
+                >
+                  +
+                </button>
+              )}
+
+              {selectedMapId && !isCombinedMapSelected && (
+                <div ref={sharePanelRef} className="relative">
+                  {sharePanelOpen ? (
+                    <div className="flex flex-col gap-2 rounded-xl border border-white/20 bg-gray-950/80 px-3 py-2 shadow-xl backdrop-blur">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {selectedMap?.is_public && selectedMap?.share_slug ? (
+                          <>
+                            <button
+                              onClick={() => handleCopyShareLink(selectedMap.share_slug!)}
+                              className="px-2.5 py-1 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500"
+                            >
+                              Copy link
+                            </button>
+                            {selectedMapShareUrl && (
+                              <a
+                                href={selectedMapShareUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-2.5 py-1 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500"
+                              >
+                                Open shared page
+                              </a>
+                            )}
+                            <button
+                              onClick={() => handleEnableSharing(true)}
+                              disabled={shareActionLoading}
+                              className="px-2.5 py-1 rounded-md border border-amber-500/60 text-xs text-amber-300 hover:text-amber-200 disabled:opacity-60"
+                            >
+                              {shareActionLoading ? "Working..." : "Regenerate"}
+                            </button>
+                            <button
+                              onClick={handleDisableSharing}
+                              disabled={shareActionLoading}
+                              className="px-2.5 py-1 rounded-md border border-red-500/60 text-xs text-red-300 hover:text-red-200 disabled:opacity-60"
+                            >
+                              {shareActionLoading ? "Working..." : "Disable"}
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => handleEnableSharing(false)}
+                            disabled={shareActionLoading}
+                            className="px-2.5 py-1 rounded-md border border-blue-500/60 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-60"
+                          >
+                            {shareActionLoading ? "Working..." : "Share read-only map"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setSharePanelOpen(false)}
+                          className="rounded-full border border-white/20 px-2 py-1 text-xs text-gray-200 hover:text-white"
+                          aria-label="Close share panel"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {shareError && (
+                        <div className="text-xs text-red-300">{shareError}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMapCreateOpen(false);
+                        setSharePanelOpen(true);
+                      }}
+                      className="h-9 w-9 rounded-md border border-blue-500/60 bg-blue-500/10 text-blue-300 hover:text-blue-200 hover:border-blue-400/70 flex items-center justify-center"
+                      title="Share map"
+                      aria-label="Share map"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-4.5 w-4.5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="18" cy="5" r="2.2" />
+                        <circle cx="6" cy="12" r="2.2" />
+                        <circle cx="18" cy="19" r="2.2" />
+                        <path d="M7.9 11 16.1 6.1" />
+                        <path d="m7.9 13 8.2 4.9" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              )}
 	            </div>
 	          </div>
+
+          {shareToast && (
+            <div className="fixed right-6 top-20 z-50 rounded-md border border-emerald-500/50 bg-gray-950/90 px-3 py-1.5 text-xs text-emerald-200 shadow-lg backdrop-blur">
+              {shareToast}
+            </div>
+          )}
 
           {(mapExportFeedback || mapExportError) && (
             <div className="mb-2 text-xs space-x-2">
@@ -2391,56 +2671,6 @@ export default function DashboardPage() {
               )}
             </div>
           )}
-
-	          {selectedMapId && !isCombinedMapSelected && (
-	            <div className="flex flex-wrap items-center gap-2 mb-2">
-	              <span className="text-xs text-gray-400">Share</span>
-	              {selectedMap?.is_public && selectedMap?.share_slug ? (
-	                <>
-	                  <button
-	                    onClick={() => handleCopyShareLink(selectedMap.share_slug!)}
-	                    className="px-2.5 py-1 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500"
-	                  >
-	                    Copy link
-	                  </button>
-	                  {selectedMapShareUrl && (
-	                    <a
-	                      href={selectedMapShareUrl}
-	                      target="_blank"
-	                      rel="noopener noreferrer"
-	                      className="px-2.5 py-1 rounded-md border border-gray-700 text-xs text-gray-200 hover:border-gray-500"
-	                    >
-	                      Open shared page
-	                    </a>
-	                  )}
-	                  <button
-	                    onClick={() => handleEnableSharing(true)}
-	                    disabled={shareActionLoading}
-	                    className="px-2.5 py-1 rounded-md border border-amber-500/60 text-xs text-amber-300 hover:text-amber-200 disabled:opacity-60"
-	                  >
-	                    {shareActionLoading ? "Working..." : "Regenerate link"}
-	                  </button>
-	                  <button
-	                    onClick={handleDisableSharing}
-	                    disabled={shareActionLoading}
-	                    className="px-2.5 py-1 rounded-md border border-red-500/60 text-xs text-red-300 hover:text-red-200 disabled:opacity-60"
-	                  >
-	                    {shareActionLoading ? "Working..." : "Disable sharing"}
-	                  </button>
-	                </>
-	              ) : (
-	                <button
-	                  onClick={() => handleEnableSharing(false)}
-	                  disabled={shareActionLoading}
-	                  className="px-2.5 py-1 rounded-md border border-blue-500/60 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-60"
-	                >
-	                  {shareActionLoading ? "Working..." : "Share read-only map"}
-	                </button>
-	              )}
-	              {shareFeedback && <span className="text-xs text-green-300">{shareFeedback}</span>}
-	              {shareError && <span className="text-xs text-red-300">{shareError}</span>}
-	            </div>
-	          )}
 
           {isCombinedMapSelected && (
             <p className="text-xs text-cyan-300 mb-2">
