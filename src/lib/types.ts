@@ -193,3 +193,35 @@ export interface GraphAssistantQueryResponse {
   externalPaperCount?: number;
   generatedAt: string;
 }
+
+export interface GraphAssistantBuildMapRequest {
+  prompt: string;
+  maxTopics?: number;
+}
+
+export interface GraphAssistantBuildMapResponse {
+  mapId: string;
+  mapName: string;
+  requestedPrompt: string;
+  topicCount: number;
+  createdCount: number;
+  skippedCount: number;
+  topics: string[];
+}
+
+export interface GraphAssistantExtendMapRequest {
+  mapId: string;
+  prompt: string;
+  maxTopics?: number;
+}
+
+export interface GraphAssistantExtendMapResponse {
+  mapId: string;
+  mapName: string;
+  requestedPrompt: string;
+  existingTopicCount: number;
+  topicCount: number;
+  createdCount: number;
+  skippedCount: number;
+  topics: string[];
+}

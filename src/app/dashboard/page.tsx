@@ -2786,6 +2786,13 @@ export default function DashboardPage() {
             selectedLink={selectedLink}
             fullscreen={isMapFullscreen}
             onOpenChange={setAssistantPanelOpen}
+            onMapCreated={(mapId) => {
+              setSelectedMapId(mapId);
+              void fetchMaps();
+            }}
+            onMapExtended={() => {
+              void fetchInterests();
+            }}
           />
 
           {showTopicDetail && selectedTopic && (

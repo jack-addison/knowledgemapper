@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  GraphAssistantBuildMapResponse,
+  GraphAssistantExtendMapResponse,
   GraphAssistantMode,
   GraphAssistantCitation,
   GraphAssistantQueryRequest,
@@ -18,6 +20,8 @@ interface GraphAssistantPanelProps {
   selectedLink: GraphLinkSelection | null;
   fullscreen?: boolean;
   onOpenChange?: (isOpen: boolean) => void;
+  onMapCreated?: (mapId: string) => void;
+  onMapExtended?: () => void;
 }
 
 interface AssistantMessage {
@@ -82,6 +86,8 @@ export default function GraphAssistantPanel({
   selectedLink,
   fullscreen = false,
   onOpenChange,
+  onMapCreated,
+  onMapExtended,
 }: GraphAssistantPanelProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [scope, setScope] = useState<GraphAssistantScope>("map");
@@ -96,6 +102,12 @@ export default function GraphAssistantPanel({
     {}
   );
   const [activeActionKey, setActiveActionKey] = useState<string | null>(null);
+  const [buildMapLoading, setBuildMapLoading] = useState(false);
+  const [buildMapFeedback, setBuildMapFeedback] = useState("");
+  const [buildMapError, setBuildMapError] = useState("");
+  const [extendMapLoading, setExtendMapLoading] = useState(false);
+  const [extendMapFeedback, setExtendMapFeedback] = useState("");
+  const [extendMapError, setExtendMapError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -109,6 +121,12 @@ export default function GraphAssistantPanel({
     setIsOpen(false);
     setMessageStatuses({});
     setActiveActionKey(null);
+    setBuildMapLoading(false);
+    setBuildMapFeedback("");
+    setBuildMapError("");
+    setExtendMapLoading(false);
+    setExtendMapFeedback("");
+    setExtendMapError("");
   }, [mapId]);
 
   useEffect(() => {
@@ -151,6 +169,108 @@ export default function GraphAssistantPanel({
     node: !hasMap || isCombinedMap || !selectedTopic,
     edge: !hasMap || isCombinedMap || !selectedLink,
   };
+
+  async function handleBuildMapFromPrompt() {
+    const prompt = question.trim();
+    if (!prompt) {
+      setBuildMapError("Enter a map prompt first.");
+      return;
+    }
+
+    setBuildMapLoading(true);
+    setBuildMapError("");
+    setBuildMapFeedback("");
+    setExtendMapError("");
+    setExtendMapFeedback("");
+
+    try {
+      const res = await fetch("/api/assistant/build-map", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string" ? data.error : "Failed to build map."
+        );
+      }
+
+      const result = data as GraphAssistantBuildMapResponse;
+      setBuildMapFeedback(
+        `Created "${result.mapName}" with ${result.createdCount} topic${
+          result.createdCount === 1 ? "" : "s"
+        }.`
+      );
+      setQuestion("");
+      onMapCreated?.(result.mapId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to build map.";
+      setBuildMapError(message);
+    } finally {
+      setBuildMapLoading(false);
+    }
+  }
+
+  async function handleExtendMapFromPrompt() {
+    if (!mapId) {
+      setExtendMapError("Select a map first.");
+      return;
+    }
+    if (isCombinedMap) {
+      setExtendMapError("Combined map cannot be extended.");
+      return;
+    }
+
+    const prompt = question.trim();
+    if (!prompt) {
+      setExtendMapError("Enter a prompt to steer how this map is extended.");
+      return;
+    }
+    setExtendMapLoading(true);
+    setExtendMapError("");
+    setExtendMapFeedback("");
+    setBuildMapError("");
+    setBuildMapFeedback("");
+
+    try {
+      const res = await fetch("/api/assistant/extend-map", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mapId,
+          prompt,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string" ? data.error : "Failed to extend map."
+        );
+      }
+
+      const result = data as GraphAssistantExtendMapResponse;
+      if (result.createdCount === 0) {
+        setExtendMapFeedback("No new unique topics were added. Try a more specific prompt.");
+      } else {
+        setExtendMapFeedback(
+          `Added ${result.createdCount} topic${
+            result.createdCount === 1 ? "" : "s"
+          } to "${result.mapName}".`
+        );
+      }
+
+      setQuestion("");
+      onMapExtended?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to extend map.";
+      setExtendMapError(message);
+    } finally {
+      setExtendMapLoading(false);
+    }
+  }
 
   function setMessageStatus(
     messageId: string,
@@ -409,6 +529,10 @@ export default function GraphAssistantPanel({
     setMessages((prev) => [...prev, userMessage]);
     setQuestion("");
     setError("");
+    setBuildMapError("");
+    setBuildMapFeedback("");
+    setExtendMapError("");
+    setExtendMapFeedback("");
     setLoading(true);
 
     const payload: GraphAssistantQueryRequest = {
@@ -577,6 +701,45 @@ export default function GraphAssistantPanel({
                 General mode works like open chat, but still uses your selected
                 scope as focus context.
               </p>
+            )}
+            {assistantMode === "general" && (
+              <div className="mt-2 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleBuildMapFromPrompt}
+                    disabled={buildMapLoading || extendMapLoading || loading}
+                    className="rounded-md border border-emerald-600/70 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:border-emerald-500 disabled:opacity-60"
+                  >
+                    {buildMapLoading ? "Building..." : "Build map from prompt"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExtendMapFromPrompt}
+                    disabled={
+                      extendMapLoading ||
+                      buildMapLoading ||
+                      loading ||
+                      isCombinedMap
+                    }
+                    className="rounded-md border border-cyan-600/70 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200 hover:border-cyan-500 disabled:opacity-60"
+                  >
+                    {extendMapLoading ? "Extending..." : "Extend current map"}
+                  </button>
+                </div>
+                {buildMapFeedback && (
+                  <p className="text-[11px] text-emerald-300">{buildMapFeedback}</p>
+                )}
+                {buildMapError && (
+                  <p className="text-[11px] text-red-300">{buildMapError}</p>
+                )}
+                {extendMapFeedback && (
+                  <p className="text-[11px] text-cyan-300">{extendMapFeedback}</p>
+                )}
+                {extendMapError && (
+                  <p className="text-[11px] text-red-300">{extendMapError}</p>
+                )}
+              </div>
             )}
           </div>
 
