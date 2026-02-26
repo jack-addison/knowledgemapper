@@ -4,6 +4,9 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_DIMENSIONS = 1536;
+
 interface RecommendationItem {
   name: string;
   reason: string;
@@ -42,10 +45,23 @@ function normalizeRecommendations(payload: unknown): RecommendationItem[] {
 
 export async function generateEmbedding(text: string): Promise<number[]> {
   const response = await openai.embeddings.create({
-    model: "text-embedding-3-small",
+    model: EMBEDDING_MODEL,
+    dimensions: EMBEDDING_DIMENSIONS,
     input: text,
   });
-  return response.data[0].embedding;
+
+  const embedding = response.data[0]?.embedding;
+  if (!Array.isArray(embedding)) {
+    throw new Error("Embedding response is missing embedding array");
+  }
+
+  if (embedding.length !== EMBEDDING_DIMENSIONS) {
+    throw new Error(
+      `Embedding dimension mismatch: expected ${EMBEDDING_DIMENSIONS}, got ${embedding.length}`
+    );
+  }
+
+  return embedding;
 }
 
 export async function generateRecommendations(
