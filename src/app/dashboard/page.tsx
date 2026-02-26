@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Navbar from "@/components/Layout/Navbar";
-import InterestPicker from "@/components/InterestPicker/InterestPicker";
 import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
 import TopicDetail from "@/components/TopicDetail/TopicDetail";
 import NotesSidebar from "@/components/NotesSidebar/NotesSidebar";
+import GraphAssistantPanel from "@/components/Assistant/GraphAssistantPanel";
 import {
   EdgeNotesRecord,
   EdgeEvidence,
@@ -333,6 +333,38 @@ function buildPublicShareUrl(shareSlug: string): string {
   return `${window.location.origin}/shared/${shareSlug}`;
 }
 
+function buildPublicShareUrlWithLayout(
+  shareSlug: string,
+  settings: {
+    similarityThreshold: number;
+    clusterThreshold: number;
+    linkForceScale: number;
+    layoutMode: GraphLayoutMode;
+  }
+): string {
+  const baseUrl = buildPublicShareUrl(shareSlug);
+  const similarity = clampValue(settings.similarityThreshold, 0.05, 0.6);
+  const cluster = clampValue(settings.clusterThreshold, 0.2, 0.7);
+  const linkForce = clampValue(settings.linkForceScale, 0.5, 3);
+
+  if (typeof window !== "undefined") {
+    const url = new URL(baseUrl, window.location.origin);
+    url.searchParams.set("similarity", similarity.toFixed(2));
+    url.searchParams.set("cluster", cluster.toFixed(2));
+    url.searchParams.set("linkForce", linkForce.toFixed(2));
+    url.searchParams.set("layoutMode", settings.layoutMode);
+    return url.toString();
+  }
+
+  const params = new URLSearchParams({
+    similarity: similarity.toFixed(2),
+    cluster: cluster.toFixed(2),
+    linkForce: linkForce.toFixed(2),
+    layoutMode: settings.layoutMode,
+  });
+  return `${baseUrl}?${params.toString()}`;
+}
+
 function getGraphEndpointId(endpoint: unknown): string | null {
   if (typeof endpoint === "string") return endpoint;
   if (!endpoint || typeof endpoint !== "object") return null;
@@ -463,6 +495,8 @@ export default function DashboardPage() {
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [newMapName, setNewMapName] = useState("");
   const [creatingMap, setCreatingMap] = useState(false);
+  const [floatingAddOpen, setFloatingAddOpen] = useState(false);
+  const [floatingAddInput, setFloatingAddInput] = useState("");
 
   const [interests, setInterests] = useState<Interest[]>([]);
   const [combinedInterestMembers, setCombinedInterestMembers] = useState<
@@ -548,6 +582,7 @@ export default function DashboardPage() {
   const [edgePanelClosing, setEdgePanelClosing] = useState(false);
   const [topicPanelEntering, setTopicPanelEntering] = useState(false);
   const [edgePanelEntering, setEdgePanelEntering] = useState(false);
+  const [assistantPanelOpen, setAssistantPanelOpen] = useState(false);
 
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
@@ -696,6 +731,11 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!selectedMapId) return;
     localStorage.setItem("km-active-map-id", selectedMapId);
+  }, [selectedMapId]);
+
+  useEffect(() => {
+    setFloatingAddOpen(false);
+    setFloatingAddInput("");
   }, [selectedMapId]);
 
   useEffect(() => {
@@ -1277,10 +1317,15 @@ export default function DashboardPage() {
       );
 
       const shareUrl =
-        typeof data.shareUrl === "string" && data.shareUrl.length > 0
-          ? data.shareUrl
-          : data.shareSlug
-            ? buildPublicShareUrl(data.shareSlug)
+        typeof data.shareSlug === "string" && data.shareSlug.length > 0
+          ? buildPublicShareUrlWithLayout(data.shareSlug, {
+              similarityThreshold: threshold,
+              clusterThreshold,
+              linkForceScale,
+              layoutMode,
+            })
+          : typeof data.shareUrl === "string"
+            ? data.shareUrl
             : "";
 
       let copied = false;
@@ -1346,7 +1391,12 @@ export default function DashboardPage() {
   }
 
   async function handleCopyShareLink(shareSlug: string) {
-    const shareUrl = buildPublicShareUrl(shareSlug);
+    const shareUrl = buildPublicShareUrlWithLayout(shareSlug, {
+      similarityThreshold: threshold,
+      clusterThreshold,
+      linkForceScale,
+      layoutMode,
+    });
     setShareError("");
     setShareFeedback("");
     try {
@@ -1558,6 +1608,18 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleFloatingAddSubmit() {
+    const value = floatingAddInput.trim();
+    if (!value) return;
+    if (interests.some((interest) => interest.name === value)) {
+      setError("That topic already exists in this map.");
+      return;
+    }
+    await handleAddInterest(value);
+    setFloatingAddInput("");
+    setFloatingAddOpen(false);
   }
 
   async function handleRemoveInterest(name: string) {
@@ -2176,9 +2238,15 @@ export default function DashboardPage() {
     );
   }
 
-  const showTopicDetail = Boolean(selectedTopic && !connectingFrom);
-  const showNotesSidebar = Boolean(notesTopic && !connectingFrom);
-  const showLinkDetail = Boolean(selectedLink && !connectingFrom);
+  const showTopicDetail = Boolean(
+    selectedTopic && !connectingFrom && !assistantPanelOpen
+  );
+  const showNotesSidebar = Boolean(
+    notesTopic && !connectingFrom && !assistantPanelOpen
+  );
+  const showLinkDetail = Boolean(
+    selectedLink && !connectingFrom && !assistantPanelOpen
+  );
   const edgeResearchQuery = selectedLink ? buildResearchQuery(selectedLink) : "";
   const edgeResearchQuestions = selectedLink
     ? buildEdgeResearchQuestions(selectedLink)
@@ -2219,7 +2287,12 @@ export default function DashboardPage() {
     : null;
   const selectedMapShareUrl =
     selectedMap?.share_slug && selectedMap.is_public
-      ? buildPublicShareUrl(selectedMap.share_slug)
+      ? buildPublicShareUrlWithLayout(selectedMap.share_slug, {
+          similarityThreshold: threshold,
+          clusterThreshold,
+          linkForceScale,
+          layoutMode,
+        })
       : null;
   const recommendedSimilarityThreshold =
     typeof tdaHealth?.recommendedSimilarityThreshold === "number"
@@ -2377,12 +2450,6 @@ export default function DashboardPage() {
           )}
 
 	          {error && <p className="text-red-400 text-sm mb-2">{error}</p>}
-
-          <InterestPicker
-            interests={interests.map((i) => i.name)}
-            onAdd={handleAddInterest}
-            loading={loading || !selectedMapId || isCombinedMapSelected}
-          />
         </div>
 
         <div className="flex items-center gap-3">
@@ -2647,6 +2714,79 @@ export default function DashboardPage() {
               <p className="text-gray-500">Create a map to get started.</p>
             </div>
           )}
+
+          {selectedMapId && !isCombinedMapSelected && (
+            <div
+              className={`absolute z-40 ${
+                isMapFullscreen ? "bottom-6 left-6" : "bottom-3 left-3"
+              }`}
+            >
+              {floatingAddOpen ? (
+                <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
+                  <input
+                    type="text"
+                    value={floatingAddInput}
+                    onChange={(e) => setFloatingAddInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (!loading) {
+                          void handleFloatingAddSubmit();
+                        }
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setFloatingAddOpen(false);
+                        setFloatingAddInput("");
+                      }
+                    }}
+                    placeholder="Add topic..."
+                    className="w-56 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
+                    autoFocus
+                    disabled={loading}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleFloatingAddSubmit()}
+                    disabled={loading || !floatingAddInput.trim()}
+                    className="rounded-full border border-cyan-500/70 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/25 disabled:opacity-50"
+                  >
+                    {loading ? "Adding..." : "Add"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFloatingAddOpen(false);
+                      setFloatingAddInput("");
+                    }}
+                    className="rounded-full border border-white/20 px-2 py-1.5 text-xs text-gray-200 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setFloatingAddOpen(true)}
+                  className="h-11 w-11 rounded-full border border-white/30 bg-white/5 text-xl font-medium text-white/90 shadow-lg backdrop-blur transition hover:border-cyan-400/70 hover:bg-cyan-500/10"
+                  title="Add topic"
+                  aria-label="Add topic"
+                >
+                  +
+                </button>
+              )}
+            </div>
+          )}
+
+          <GraphAssistantPanel
+            mapId={selectedMapId}
+            mapName={selectedMap?.name || null}
+            isCombinedMap={isCombinedMapSelected}
+            selectedTopic={selectedTopic}
+            selectedLink={selectedLink}
+            fullscreen={isMapFullscreen}
+            onOpenChange={setAssistantPanelOpen}
+          />
 
           {showTopicDetail && selectedTopic && (
             <div

@@ -2,12 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
-import { buildGraph } from "@/lib/graph";
+import {
+  buildGraph,
+  DEFAULT_CLUSTER_THRESHOLD,
+  DEFAULT_SIMILARITY_THRESHOLD,
+} from "@/lib/graph";
 import type {
   EdgeEvidence,
   GraphData,
+  GraphLayoutMode,
   GraphLinkSelection,
   SharedMapSnapshot,
   TopicEvidence,
@@ -18,6 +23,30 @@ interface LearningResource {
   description: string;
   href: string;
   label: string;
+}
+
+const DEFAULT_LINK_FORCE_SCALE = 3;
+const DEFAULT_LAYOUT_MODE: GraphLayoutMode = "umap";
+
+function clampValue(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function parseNumberParam(
+  raw: string | null,
+  min: number,
+  max: number,
+  fallback: number
+): number {
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return clampValue(parsed, min, max);
+}
+
+function parseLayoutModeParam(raw: string | null): GraphLayoutMode {
+  if (raw === "classic" || raw === "umap") return raw;
+  return DEFAULT_LAYOUT_MODE;
 }
 
 function normalizeEdgePair(a: string, b: string): { a: string; b: string } {
@@ -144,7 +173,28 @@ function buildLearningResources(topic: string): LearningResource[] {
 
 export default function SharedMapPage() {
   const params = useParams<{ slug: string }>();
+  const searchParams = useSearchParams();
   const slug = typeof params?.slug === "string" ? params.slug : "";
+
+  const sharedSimilarityThreshold = parseNumberParam(
+    searchParams.get("similarity"),
+    0.05,
+    0.6,
+    DEFAULT_SIMILARITY_THRESHOLD
+  );
+  const sharedClusterThreshold = parseNumberParam(
+    searchParams.get("cluster"),
+    0.2,
+    0.7,
+    DEFAULT_CLUSTER_THRESHOLD
+  );
+  const sharedLinkForceScale = parseNumberParam(
+    searchParams.get("linkForce"),
+    0.5,
+    3,
+    DEFAULT_LINK_FORCE_SCALE
+  );
+  const sharedLayoutMode = parseLayoutModeParam(searchParams.get("layoutMode"));
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -228,8 +278,11 @@ export default function SharedMapPage() {
 
   const graphData: GraphData = useMemo(() => {
     if (!snapshot) return { nodes: [], links: [] };
-    return buildGraph(snapshot.interests);
-  }, [snapshot]);
+    return buildGraph(snapshot.interests, {
+      similarityThreshold: sharedSimilarityThreshold,
+      clusterThreshold: sharedClusterThreshold,
+    });
+  }, [snapshot, sharedSimilarityThreshold, sharedClusterThreshold]);
 
   const selectedTopic = useMemo(() => {
     if (!snapshot || !selectedTopicId) return null;
@@ -381,6 +434,8 @@ export default function SharedMapPage() {
             data={graphData}
             selectedNodeId={selectedTopicId}
             selectedLink={selectedLink}
+            linkForceScale={sharedLinkForceScale}
+            layoutMode={sharedLayoutMode}
             onNodeClick={(nodeId) => {
               setSelectedTopicId(nodeId);
               setSelectedLink(null);

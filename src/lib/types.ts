@@ -147,3 +147,49 @@ export interface SharedMapSnapshot {
   edgeEvidence: SavedEdgeEvidence[];
   edgeNotes: SharedEdgeNote[];
 }
+
+export type GraphAssistantScope = "map" | "node" | "edge";
+export type GraphAssistantMode = "grounded" | "general";
+
+export type GraphAssistantCitationType = "node" | "edge" | "paper";
+
+export interface GraphAssistantCitation {
+  id: string;
+  type: GraphAssistantCitationType;
+  label: string;
+  snippet: string;
+  url?: string | null;
+  paperTitle?: string;
+  year?: number | null;
+  journal?: string;
+  authors?: string[];
+  reason?: string;
+  sourceProvider?: string;
+  nodeId?: string;
+  interestAId?: string;
+  interestBId?: string;
+}
+
+export interface GraphAssistantQueryRequest {
+  mapId: string;
+  scope: GraphAssistantScope;
+  assistantMode?: GraphAssistantMode;
+  question: string;
+  nodeId?: string;
+  interestAId?: string;
+  interestBId?: string;
+  edgeSimilarity?: number | null;
+  allowExternalPapers?: boolean;
+}
+
+export interface GraphAssistantQueryResponse {
+  answer: string;
+  scope: GraphAssistantScope;
+  assistantMode: GraphAssistantMode;
+  citations: GraphAssistantCitation[];
+  insufficientEvidence: boolean;
+  suggestedFollowups: string[];
+  contextCount: number;
+  externalPaperCount?: number;
+  generatedAt: string;
+}
