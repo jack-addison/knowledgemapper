@@ -36,6 +36,7 @@ npm install
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 OPENAI_API_KEY=your_openai_key
 ```
 
@@ -57,6 +58,12 @@ At minimum, the app expects these tables:
 - `edge_evidence`
 - `interest_evidence`
 
+For sharing, `maps` should include:
+
+- `is_public boolean`
+- `share_slug text` (unique when not null)
+- `shared_at timestamptz`
+
 `interests.embedding` should be a vector-compatible field if you want semantic graph links.
 
 ## Core Routes
@@ -74,6 +81,8 @@ At minimum, the app expects these tables:
   - `/api/interests/evidence`
   - `/api/edges/notes`
   - `/api/edges/evidence`
+  - `/api/maps/share`
+  - `/api/shared/[slug]`
   - `/api/research/node-evidence`
   - `/api/research/evidence`
 
@@ -89,4 +98,5 @@ Set environment variables in Vercel Project Settings:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
 - `OPENAI_API_KEY`

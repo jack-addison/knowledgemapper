@@ -27,7 +27,7 @@ interface TopicDetailProps {
   savingResearchEvidenceUrl: string | null;
   deletingResearchEvidenceId: string | null;
   onLoadResearchEvidence: () => Promise<void> | void;
-  onSaveResearchEvidence: (source: EvidenceSource) => Promise<void> | void;
+  onSaveResearchEvidence: (source: EvidenceSource) => Promise<boolean> | boolean;
   onDeleteResearchEvidence: (id: string) => Promise<void> | void;
 }
 
@@ -63,6 +63,13 @@ function getRedditSearchUrl(topic: string): string {
   return `https://www.reddit.com/search/?q=${encodeURIComponent(topic)}`;
 }
 
+function normalizePaperUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 interface LearningResource {
   title: string;
   description: string;
@@ -95,6 +102,14 @@ export default function TopicDetail({
 }: TopicDetailProps) {
   const [expanding, setExpanding] = useState(false);
   const [expandResult, setExpandResult] = useState<string | null>(null);
+  const [manualSourceTitle, setManualSourceTitle] = useState("");
+  const [manualSourceUrl, setManualSourceUrl] = useState("");
+  const [manualSourceYear, setManualSourceYear] = useState("");
+  const [manualSourceJournal, setManualSourceJournal] = useState("");
+  const [manualSourceAuthors, setManualSourceAuthors] = useState("");
+  const [manualSourceReason, setManualSourceReason] = useState("");
+  const [manualSourceError, setManualSourceError] = useState("");
+  const [manualSourceSaving, setManualSourceSaving] = useState(false);
   const learningResources: LearningResource[] = [
     {
       title: "YouTube explainers",
@@ -158,6 +173,59 @@ export default function TopicDetail({
     } finally {
       setExpanding(false);
     }
+  }
+
+  async function handleSaveManualSource() {
+    const title = manualSourceTitle.trim();
+    const url = normalizePaperUrl(manualSourceUrl);
+    if (!title || !url) {
+      setManualSourceError("Title and URL are required.");
+      return;
+    }
+
+    let year: number | null = null;
+    if (manualSourceYear.trim()) {
+      const parsedYear = Number(manualSourceYear.trim());
+      if (!Number.isFinite(parsedYear)) {
+        setManualSourceError("Year must be a valid number.");
+        return;
+      }
+      year = Math.trunc(parsedYear);
+    }
+
+    const authors = manualSourceAuthors
+      .split(",")
+      .map((author) => author.trim())
+      .filter((author) => author.length > 0)
+      .slice(0, 8);
+
+    const source: EvidenceSource = {
+      title,
+      url,
+      year,
+      journal: manualSourceJournal.trim() || "User provided source",
+      authors,
+      reason:
+        manualSourceReason.trim() || `User-added evidence for topic: ${name}.`,
+      sourceProvider: "manual",
+    };
+
+    setManualSourceSaving(true);
+    setManualSourceError("");
+    const saved = await onSaveResearchEvidence(source);
+    setManualSourceSaving(false);
+
+    if (!saved) {
+      setManualSourceError("Failed to save paper link.");
+      return;
+    }
+
+    setManualSourceTitle("");
+    setManualSourceUrl("");
+    setManualSourceYear("");
+    setManualSourceJournal("");
+    setManualSourceAuthors("");
+    setManualSourceReason("");
   }
 
   return (
@@ -390,6 +458,67 @@ export default function TopicDetail({
               </p>
             )}
           </div>
+
+          <details className="rounded-md border border-blue-800/40 bg-blue-950/10 p-3">
+            <summary className="cursor-pointer select-none text-xs text-blue-200">
+              Add your own paper link
+            </summary>
+            <div className="mt-2 space-y-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={manualSourceTitle}
+                  onChange={(e) => setManualSourceTitle(e.target.value)}
+                  placeholder="Paper title *"
+                  className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+                <input
+                  type="text"
+                  value={manualSourceUrl}
+                  onChange={(e) => setManualSourceUrl(e.target.value)}
+                  placeholder="URL or DOI link *"
+                  className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+                <input
+                  type="text"
+                  value={manualSourceJournal}
+                  onChange={(e) => setManualSourceJournal(e.target.value)}
+                  placeholder="Journal / venue (optional)"
+                  className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+                <input
+                  type="text"
+                  value={manualSourceYear}
+                  onChange={(e) => setManualSourceYear(e.target.value)}
+                  placeholder="Year (optional)"
+                  className="rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <input
+                type="text"
+                value={manualSourceAuthors}
+                onChange={(e) => setManualSourceAuthors(e.target.value)}
+                placeholder="Authors (optional, comma-separated)"
+                className="w-full rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              />
+              <textarea
+                value={manualSourceReason}
+                onChange={(e) => setManualSourceReason(e.target.value)}
+                placeholder="Why this paper is relevant (optional)"
+                className="w-full min-h-[64px] rounded-md border border-gray-700 bg-gray-950 px-2.5 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              />
+              {manualSourceError && (
+                <p className="text-xs text-red-300">{manualSourceError}</p>
+              )}
+              <button
+                onClick={handleSaveManualSource}
+                disabled={manualSourceSaving}
+                className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-xs text-white"
+              >
+                {manualSourceSaving ? "Saving..." : "Save paper link"}
+              </button>
+            </div>
+          </details>
         </div>
 
         <div className="rounded-md border border-gray-700 bg-gray-800/50 p-3 space-y-2">
