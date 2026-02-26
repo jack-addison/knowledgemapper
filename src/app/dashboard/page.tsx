@@ -26,6 +26,7 @@ import {
   DEFAULT_SIMILARITY_THRESHOLD,
 } from "@/lib/graph";
 import { computeTdaMapHealth } from "@/lib/tda";
+import { createClient as createSupabaseBrowserClient } from "@/lib/supabase";
 
 const DEFAULT_LINK_FORCE_SCALE = 3;
 const MAP_LAYOUT_STORAGE_PREFIX = "km-map-layout-settings:";
@@ -163,6 +164,21 @@ interface MapLayoutSettings {
   clusterThreshold: number;
   linkForceScale: number;
   layoutMode: GraphLayoutMode;
+}
+
+interface CollaborationMember {
+  userId: string;
+  email: string | null;
+  role: "owner" | "editor" | "viewer";
+  isOwner: boolean;
+  joinedAt: string | null;
+}
+
+interface CollaborationInviteInfo {
+  role: "editor" | "viewer";
+  expiresAt: string | null;
+  createdAt: string | null;
+  usedCount: number;
 }
 
 const DEFAULT_MAP_LAYOUT_SETTINGS: MapLayoutSettings = {
@@ -517,6 +533,19 @@ export default function DashboardPage() {
   const [shareError, setShareError] = useState("");
   const [sharePanelOpen, setSharePanelOpen] = useState(false);
   const [shareToast, setShareToast] = useState("");
+  const [collabInviteLoading, setCollabInviteLoading] = useState(false);
+  const [collabInviteError, setCollabInviteError] = useState("");
+  const [collabInviteRole, setCollabInviteRole] = useState<"editor" | "viewer">(
+    "editor"
+  );
+  const [collabMembers, setCollabMembers] = useState<CollaborationMember[]>([]);
+  const [collabMembersLoading, setCollabMembersLoading] = useState(false);
+  const [collabMembersError, setCollabMembersError] = useState("");
+  const [collabMemberActionUserId, setCollabMemberActionUserId] = useState<
+    string | null
+  >(null);
+  const [activeCollabInvite, setActiveCollabInvite] =
+    useState<CollaborationInviteInfo | null>(null);
   const [mapExportLoading, setMapExportLoading] = useState(false);
   const [mapExportError, setMapExportError] = useState("");
   const [mapExportFeedback, setMapExportFeedback] = useState("");
@@ -747,6 +776,11 @@ export default function DashboardPage() {
     setSharePanelOpen(false);
     setShareError("");
     setShareToast("");
+    setCollabInviteError("");
+    setCollabMembers([]);
+    setCollabMembersError("");
+    setActiveCollabInvite(null);
+    setCollabInviteRole("editor");
   }, [selectedMapId]);
 
   useEffect(() => {
@@ -969,6 +1003,58 @@ export default function DashboardPage() {
     setConnectingResult(null);
     fetchInterests();
   }, [mapsLoading, selectedMapId, fetchInterests]);
+
+  useEffect(() => {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) return;
+
+    const supabase = createSupabaseBrowserClient();
+    const mapId = selectedMapId;
+    let refreshTimer: number | null = null;
+
+    function scheduleRefresh() {
+      if (refreshTimer !== null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void fetchInterests();
+      }, 220);
+    }
+
+    const channel = supabase
+      .channel(`map-live-${mapId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "interests", filter: `map_id=eq.${mapId}` },
+        scheduleRefresh
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "interest_evidence",
+          filter: `map_id=eq.${mapId}`,
+        },
+        scheduleRefresh
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "edge_evidence", filter: `map_id=eq.${mapId}` },
+        scheduleRefresh
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "edge_notes", filter: `map_id=eq.${mapId}` },
+        scheduleRefresh
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [fetchInterests, selectedMapId]);
 
   useEffect(() => {
     if (!notesTopic) return;
@@ -1320,8 +1406,8 @@ export default function DashboardPage() {
   }
 
   async function handleDeleteMap() {
-    if (!selectedMapId || isCombinedMapId(selectedMapId)) {
-      setError("Select a specific map to delete.");
+    if (!selectedMapId || isCombinedMapId(selectedMapId) || !selectedMapCanManage) {
+      setError("Only the map owner can delete this map.");
       return;
     }
 
@@ -1339,6 +1425,7 @@ export default function DashboardPage() {
     setError("");
     setShareError("");
     setShareToast("");
+    setCollabInviteError("");
     setMapExportError("");
     setMapExportFeedback("");
 
@@ -1377,10 +1464,51 @@ export default function DashboardPage() {
     }
   }
 
+  async function fetchCollaborationState(mapId: string) {
+    setCollabMembersLoading(true);
+    setCollabMembersError("");
+
+    try {
+      const params = new URLSearchParams({ mapId });
+      const res = await fetch(`/api/maps/collaboration?${params.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCollabMembers([]);
+        setActiveCollabInvite(null);
+        setCollabMembersError(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to load collaborators."
+        );
+        return;
+      }
+
+      const members = Array.isArray(data.members)
+        ? (data.members as CollaborationMember[])
+        : [];
+      setCollabMembers(members);
+      const invite =
+        data.activeInvite && typeof data.activeInvite === "object"
+          ? (data.activeInvite as CollaborationInviteInfo)
+          : null;
+      setActiveCollabInvite(invite);
+    } catch {
+      setCollabMembers([]);
+      setActiveCollabInvite(null);
+      setCollabMembersError("Failed to load collaborators.");
+    } finally {
+      setCollabMembersLoading(false);
+    }
+  }
+
   async function handleEnableSharing(regenerate = false) {
     if (!selectedMapId) return;
     if (isCombinedMapId(selectedMapId)) {
       setShareError("Combined map cannot be shared. Share an individual map instead.");
+      return;
+    }
+    if (!selectedMapCanManage) {
+      setShareError("Only the map owner can manage sharing.");
       return;
     }
 
@@ -1448,6 +1576,10 @@ export default function DashboardPage() {
       setShareError("Combined map cannot be shared.");
       return;
     }
+    if (!selectedMapCanManage) {
+      setShareError("Only the map owner can manage sharing.");
+      return;
+    }
 
     setShareActionLoading(true);
     setShareError("");
@@ -1498,6 +1630,170 @@ export default function DashboardPage() {
       showShareToast("Copied");
     } catch {
       setShareError("Failed to copy share link");
+    }
+  }
+
+  async function handleCopyCollaborationInvite() {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) return;
+    if (!selectedMapCanManage) {
+      setCollabInviteError("Only the map owner can generate edit invites.");
+      return;
+    }
+
+    setCollabInviteLoading(true);
+    setCollabInviteError("");
+    try {
+      const res = await fetch("/api/maps/collaboration", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mapId: selectedMapId,
+          role: collabInviteRole,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCollabInviteError(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to generate collaboration invite."
+        );
+        return;
+      }
+
+      const inviteUrl =
+        typeof data.inviteUrl === "string" && data.inviteUrl.length > 0
+          ? data.inviteUrl
+          : "";
+      if (!inviteUrl) {
+        setCollabInviteError("Invite URL was empty.");
+        return;
+      }
+
+      await navigator.clipboard.writeText(inviteUrl);
+      showShareToast("Invite copied");
+      await fetchCollaborationState(selectedMapId);
+    } catch {
+      setCollabInviteError("Failed to copy collaboration invite");
+    } finally {
+      setCollabInviteLoading(false);
+    }
+  }
+
+  async function handleRevokeCollaborationInvite() {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) return;
+    if (!selectedMapCanManage) {
+      setCollabInviteError("Only the map owner can revoke invites.");
+      return;
+    }
+
+    setCollabInviteLoading(true);
+    setCollabInviteError("");
+    try {
+      const res = await fetch("/api/maps/collaboration", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapId: selectedMapId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCollabInviteError(
+          typeof data.error === "string" ? data.error : "Failed to revoke invite."
+        );
+        return;
+      }
+
+      setActiveCollabInvite(null);
+      showShareToast("Invite revoked");
+      await fetchCollaborationState(selectedMapId);
+    } catch {
+      setCollabInviteError("Failed to revoke invite");
+    } finally {
+      setCollabInviteLoading(false);
+    }
+  }
+
+  async function handleUpdateCollaboratorRole(
+    userId: string,
+    role: "editor" | "viewer"
+  ) {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) return;
+    if (!selectedMapCanManage) {
+      setCollabMembersError("Only the map owner can change collaborator roles.");
+      return;
+    }
+
+    setCollabMemberActionUserId(userId);
+    setCollabMembersError("");
+    try {
+      const res = await fetch("/api/maps/collaboration/members", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mapId: selectedMapId,
+          userId,
+          role,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCollabMembersError(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to update collaborator role."
+        );
+        return;
+      }
+
+      setCollabMembers((prev) =>
+        prev.map((member) =>
+          member.userId === userId ? { ...member, role } : member
+        )
+      );
+      showShareToast("Role updated");
+    } catch {
+      setCollabMembersError("Failed to update collaborator role.");
+    } finally {
+      setCollabMemberActionUserId(null);
+    }
+  }
+
+  async function handleRemoveCollaborator(userId: string) {
+    if (!selectedMapId || isCombinedMapId(selectedMapId)) return;
+    if (!selectedMapCanManage) {
+      setCollabMembersError("Only the map owner can remove collaborators.");
+      return;
+    }
+
+    const confirmed = window.confirm("Remove this collaborator from the map?");
+    if (!confirmed) return;
+
+    setCollabMemberActionUserId(userId);
+    setCollabMembersError("");
+    try {
+      const res = await fetch("/api/maps/collaboration/members", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mapId: selectedMapId,
+          userId,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCollabMembersError(
+          typeof data.error === "string" ? data.error : "Failed to remove collaborator."
+        );
+        return;
+      }
+
+      setCollabMembers((prev) => prev.filter((member) => member.userId !== userId));
+      showShareToast("Collaborator removed");
+    } catch {
+      setCollabMembersError("Failed to remove collaborator.");
+    } finally {
+      setCollabMemberActionUserId(null);
     }
   }
 
@@ -1681,6 +1977,10 @@ export default function DashboardPage() {
       setError("Combined map is automatic. Add topics in a specific map.");
       return;
     }
+    if (!selectedMapCanEdit) {
+      setError("You only have view access to this map.");
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -1721,6 +2021,10 @@ export default function DashboardPage() {
       setError("Combined map is read-only. Remove topics in a specific map.");
       return;
     }
+    if (!selectedMapCanEdit) {
+      setError("You only have view access to this map.");
+      return;
+    }
 
     const interest = interests.find((i) => i.name === name);
     if (!interest) return;
@@ -1751,6 +2055,9 @@ export default function DashboardPage() {
     }
     if (isCombinedMapId(selectedMapId)) {
       throw new Error("Combined map is read-only");
+    }
+    if (!selectedMapCanEdit) {
+      throw new Error("You only have view access to this map.");
     }
 
     const res = await fetch("/api/interests/expand", {
@@ -1831,6 +2138,10 @@ export default function DashboardPage() {
       setError("Combined map is read-only. Create connections in a specific map.");
       return;
     }
+    if (!selectedMapCanEdit) {
+      setError("You only have view access to this map.");
+      return;
+    }
     setConnectingFrom(topicName);
     setConnectingResult(null);
     closeEdgePanelImmediate();
@@ -1842,6 +2153,10 @@ export default function DashboardPage() {
     if (!connectingFrom || connectingFrom === topicB || !selectedMapId) return;
     if (isCombinedMapId(selectedMapId)) {
       setError("Combined map is read-only. Create connections in a specific map.");
+      return;
+    }
+    if (!selectedMapCanEdit) {
+      setError("You only have view access to this map.");
       return;
     }
 
@@ -1982,6 +2297,10 @@ export default function DashboardPage() {
       );
       return false;
     }
+    if (!selectedMapCanEdit) {
+      setSavedTopicEvidenceError("You only have view access to this map.");
+      return false;
+    }
 
     const topicParams = getActiveTopicParams();
     if (!topicParams) return false;
@@ -2035,6 +2354,10 @@ export default function DashboardPage() {
       setSavedTopicEvidenceError(
         "Combined map is read-only. Remove evidence in a specific map."
       );
+      return;
+    }
+    if (!selectedMapCanEdit) {
+      setSavedTopicEvidenceError("You only have view access to this map.");
       return;
     }
 
@@ -2120,6 +2443,10 @@ export default function DashboardPage() {
       );
       return false;
     }
+    if (!selectedMapCanEdit) {
+      setSavedEdgeEvidenceError("You only have view access to this map.");
+      return false;
+    }
 
     const edgeParams = getActiveEdgeParams();
     if (!edgeParams) return false;
@@ -2167,6 +2494,11 @@ export default function DashboardPage() {
   }
 
   async function handleSaveManualEdgeEvidence() {
+    if (isCombinedMapId(selectedMapId) || !selectedMapCanEdit) {
+      setManualEdgeEvidenceError("This map is read-only.");
+      return;
+    }
+
     const title = manualEdgeEvidenceTitle.trim();
     const url = normalizePaperUrl(manualEdgeEvidenceUrl);
     if (!title || !url) {
@@ -2229,6 +2561,10 @@ export default function DashboardPage() {
       );
       return;
     }
+    if (!selectedMapCanEdit) {
+      setSavedEdgeEvidenceError("You only have view access to this map.");
+      return;
+    }
 
     const edgeParams = getActiveEdgeParams();
     if (!edgeParams) return;
@@ -2264,6 +2600,10 @@ export default function DashboardPage() {
       setEdgeNotesError(
         "Combined map is read-only. Save edge notes in a specific map."
       );
+      return;
+    }
+    if (!selectedMapCanEdit) {
+      setEdgeNotesError("You only have view access to this map.");
       return;
     }
 
@@ -2312,6 +2652,9 @@ export default function DashboardPage() {
   async function handleSaveNotes(topicId: string, notes: string) {
     if (isCombinedMapId(selectedMapId)) {
       throw new Error("Combined map is read-only.");
+    }
+    if (!selectedMapCanEdit) {
+      throw new Error("You only have view access to this map.");
     }
 
     const res = await fetch("/api/interests", {
@@ -2379,6 +2722,16 @@ export default function DashboardPage() {
   const selectedMap = selectedMapId
     ? mapOptions.find((map) => map.id === selectedMapId) || null
     : null;
+  const selectedMapCanEdit = Boolean(
+    selectedMap &&
+      !isCombinedMapSelected &&
+      (selectedMap.can_edit ?? selectedMap.role !== "viewer")
+  );
+  const selectedMapCanManage = Boolean(
+    selectedMap &&
+      !isCombinedMapSelected &&
+      (selectedMap.can_manage ?? selectedMap.role === "owner")
+  );
   const selectedMapShareUrl =
     selectedMap?.share_slug && selectedMap.is_public
       ? buildPublicShareUrlWithLayout(selectedMap.share_slug, {
@@ -2407,6 +2760,24 @@ export default function DashboardPage() {
     Math.abs(threshold - recommendedSimilarityThreshold) < 0.005 &&
     Math.abs(clusterThreshold - recommendedClusterThreshold) < 0.005 &&
     Math.abs(linkForceScale - recommendedLinkForceScale) < 0.005;
+
+  useEffect(() => {
+    if (
+      !sharePanelOpen ||
+      !selectedMapId ||
+      isCombinedMapSelected ||
+      !selectedMapCanManage
+    ) {
+      return;
+    }
+
+    void fetchCollaborationState(selectedMapId);
+  }, [
+    sharePanelOpen,
+    selectedMapId,
+    isCombinedMapSelected,
+    selectedMapCanManage,
+  ]);
 
   if (mapsLoading || initialLoading) {
     return (
@@ -2442,6 +2813,11 @@ export default function DashboardPage() {
                 {mapOptions.map((map) => (
                   <option key={map.id} value={map.id}>
                     {map.name}
+                    {map.role === "editor"
+                      ? " (shared: edit)"
+                      : map.role === "viewer"
+                        ? " (shared: view)"
+                        : ""}
                   </option>
                 ))}
               </select>
@@ -2507,9 +2883,23 @@ export default function DashboardPage() {
               {selectedMapId && !isCombinedMapSelected && (
                 <div ref={sharePanelRef} className="relative order-2">
                   {sharePanelOpen ? (
-                    <div className="flex flex-col gap-2 rounded-xl border border-white/20 bg-gray-950/80 px-3 py-2 shadow-xl backdrop-blur">
+                    <div className="w-[min(92vw,640px)] flex flex-col gap-3 rounded-xl border border-white/20 bg-gray-950/80 px-3 py-3 shadow-xl backdrop-blur">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs uppercase tracking-wide text-gray-400">
+                          Share & members
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setSharePanelOpen(false)}
+                          className="rounded-full border border-white/20 px-2 py-1 text-xs text-gray-200 hover:text-white"
+                          aria-label="Close share panel"
+                        >
+                          ✕
+                        </button>
+                      </div>
+
                       <div className="flex flex-wrap items-center gap-2">
-                        {selectedMap?.is_public && selectedMap?.share_slug ? (
+                        {selectedMap?.is_public && selectedMap?.share_slug && (
                           <>
                             <button
                               onClick={() => handleCopyShareLink(selectedMap.share_slug!)}
@@ -2527,41 +2917,200 @@ export default function DashboardPage() {
                                 Open shared page
                               </a>
                             )}
+                          </>
+                        )}
+                        {selectedMapCanManage ? (
+                          selectedMap?.is_public ? (
+                            <>
+                              <button
+                                onClick={() => handleEnableSharing(true)}
+                                disabled={shareActionLoading}
+                                className="px-2.5 py-1 rounded-md border border-amber-500/60 text-xs text-amber-300 hover:text-amber-200 disabled:opacity-60"
+                              >
+                                {shareActionLoading ? "Working..." : "Regenerate public link"}
+                              </button>
+                              <button
+                                onClick={handleDisableSharing}
+                                disabled={shareActionLoading}
+                                className="px-2.5 py-1 rounded-md border border-red-500/60 text-xs text-red-300 hover:text-red-200 disabled:opacity-60"
+                              >
+                                {shareActionLoading ? "Working..." : "Disable public link"}
+                              </button>
+                            </>
+                          ) : (
                             <button
-                              onClick={() => handleEnableSharing(true)}
+                              onClick={() => handleEnableSharing(false)}
                               disabled={shareActionLoading}
-                              className="px-2.5 py-1 rounded-md border border-amber-500/60 text-xs text-amber-300 hover:text-amber-200 disabled:opacity-60"
+                              className="px-2.5 py-1 rounded-md border border-blue-500/60 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-60"
                             >
-                              {shareActionLoading ? "Working..." : "Regenerate"}
+                              {shareActionLoading ? "Working..." : "Enable public read-only"}
+                            </button>
+                          )
+                        ) : (
+                          <span className="text-xs text-gray-400">
+                            Only the owner can change share settings.
+                          </span>
+                        )}
+                      </div>
+
+                      {selectedMapCanManage && (
+                        <div className="rounded-md border border-cyan-900/50 bg-cyan-950/20 p-2.5 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-cyan-200">Invite role</span>
+                            <select
+                              value={collabInviteRole}
+                              onChange={(e) =>
+                                setCollabInviteRole(
+                                  e.target.value === "viewer" ? "viewer" : "editor"
+                                )
+                              }
+                              disabled={collabInviteLoading}
+                              className="px-2 py-1 rounded-md border border-cyan-800/60 bg-gray-950 text-xs text-cyan-100 focus:outline-none focus:border-cyan-500/70 disabled:opacity-60"
+                            >
+                              <option value="editor">Editor</option>
+                              <option value="viewer">Viewer</option>
+                            </select>
+                            <button
+                              type="button"
+                              onClick={handleCopyCollaborationInvite}
+                              disabled={collabInviteLoading}
+                              className="px-2.5 py-1 rounded-md border border-cyan-500/60 text-xs text-cyan-200 hover:text-cyan-100 disabled:opacity-60"
+                            >
+                              {collabInviteLoading
+                                ? "Working..."
+                                : activeCollabInvite
+                                  ? "Regenerate invite"
+                                  : "Create invite"}
                             </button>
                             <button
-                              onClick={handleDisableSharing}
-                              disabled={shareActionLoading}
+                              type="button"
+                              onClick={handleRevokeCollaborationInvite}
+                              disabled={collabInviteLoading || !activeCollabInvite}
                               className="px-2.5 py-1 rounded-md border border-red-500/60 text-xs text-red-300 hover:text-red-200 disabled:opacity-60"
                             >
-                              {shareActionLoading ? "Working..." : "Disable"}
+                              Revoke invite
                             </button>
-                          </>
-                        ) : (
+                          </div>
+                          <div className="text-[11px] text-cyan-100/75">
+                            {activeCollabInvite ? (
+                              <>
+                                Active {activeCollabInvite.role} invite · expires{" "}
+                                {activeCollabInvite.expiresAt
+                                  ? new Date(
+                                      activeCollabInvite.expiresAt
+                                    ).toLocaleString()
+                                  : "not set"}{" "}
+                                · used {activeCollabInvite.usedCount} times
+                              </>
+                            ) : (
+                              "No active invite."
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="rounded-md border border-gray-800 bg-gray-900/60 p-2.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs text-gray-300">Members</p>
                           <button
-                            onClick={() => handleEnableSharing(false)}
-                            disabled={shareActionLoading}
-                            className="px-2.5 py-1 rounded-md border border-blue-500/60 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-60"
+                            type="button"
+                            onClick={() => {
+                              if (selectedMapId && !isCombinedMapSelected) {
+                                void fetchCollaborationState(selectedMapId);
+                              }
+                            }}
+                            disabled={collabMembersLoading || !selectedMapCanManage}
+                            className="px-2 py-1 rounded-md border border-gray-700 text-[11px] text-gray-300 hover:border-gray-500 disabled:opacity-60"
                           >
-                            {shareActionLoading ? "Working..." : "Share read-only map"}
+                            {collabMembersLoading ? "Loading..." : "Refresh"}
                           </button>
+                        </div>
+                        {!selectedMapCanManage && (
+                          <p className="text-xs text-gray-500">
+                            Only the map owner can manage members and invites.
+                          </p>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => setSharePanelOpen(false)}
-                          className="rounded-full border border-white/20 px-2 py-1 text-xs text-gray-200 hover:text-white"
-                          aria-label="Close share panel"
-                        >
-                          ✕
-                        </button>
+                        {collabMembers.length > 0 ? (
+                          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                            {collabMembers.map((member) => {
+                              const busy = collabMemberActionUserId === member.userId;
+                              const displayEmail =
+                                member.email ||
+                                `${member.userId.slice(0, 8)}...${member.userId.slice(-4)}`;
+                              return (
+                                <div
+                                  key={member.userId}
+                                  className="rounded-md border border-gray-800 bg-gray-900/70 px-2.5 py-2"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="text-xs text-gray-100 truncate">
+                                        {displayEmail}
+                                      </p>
+                                      <p className="text-[11px] text-gray-500">
+                                        {member.isOwner
+                                          ? "Owner"
+                                          : member.joinedAt
+                                            ? `Joined ${new Date(
+                                                member.joinedAt
+                                              ).toLocaleDateString()}`
+                                            : "Collaborator"}
+                                      </p>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      {member.isOwner ? (
+                                        <span className="px-2 py-1 rounded-md border border-cyan-700/70 text-[11px] text-cyan-200">
+                                          owner
+                                        </span>
+                                      ) : selectedMapCanManage ? (
+                                        <>
+                                          <select
+                                            value={member.role}
+                                            onChange={(e) =>
+                                              void handleUpdateCollaboratorRole(
+                                                member.userId,
+                                                e.target.value === "viewer"
+                                                  ? "viewer"
+                                                  : "editor"
+                                              )
+                                            }
+                                            disabled={busy}
+                                            className="px-2 py-1 rounded-md border border-gray-700 bg-gray-950 text-[11px] text-gray-200 focus:outline-none focus:border-cyan-500/70 disabled:opacity-60"
+                                          >
+                                            <option value="editor">editor</option>
+                                            <option value="viewer">viewer</option>
+                                          </select>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void handleRemoveCollaborator(member.userId)
+                                            }
+                                            disabled={busy}
+                                            className="px-2 py-1 rounded-md border border-red-500/60 text-[11px] text-red-300 hover:text-red-200 disabled:opacity-60"
+                                          >
+                                            Remove
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <span className="px-2 py-1 rounded-md border border-gray-700 text-[11px] text-gray-400">
+                                          {member.role}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-500">No collaborators yet.</p>
+                        )}
                       </div>
-                      {shareError && (
-                        <div className="text-xs text-red-300">{shareError}</div>
+
+                      {(shareError || collabInviteError || collabMembersError) && (
+                        <div className="text-xs text-red-300">
+                          {shareError || collabInviteError || collabMembersError}
+                        </div>
                       )}
                     </div>
                   ) : (
@@ -2629,7 +3178,7 @@ export default function DashboardPage() {
               </button>
               <button
                 onClick={handleDeleteMap}
-                disabled={!selectedMapId || isCombinedMapSelected || deletingMap}
+                disabled={!selectedMapCanManage || deletingMap}
                 className="order-4 h-9 w-9 rounded-md border border-red-500/60 text-red-300 hover:text-red-200 hover:border-red-400/70 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center"
                 title="Delete selected map"
                 aria-label="Delete selected map"
@@ -2679,6 +3228,11 @@ export default function DashboardPage() {
             <p className="text-xs text-cyan-300 mb-2">
               Combined map is automatic and read-only. Edit individual maps to update
               it.
+            </p>
+          )}
+          {!isCombinedMapSelected && selectedMap && !selectedMapCanEdit && (
+            <p className="text-xs text-amber-300 mb-2">
+              You have view-only access to this shared map.
             </p>
           )}
 
@@ -2982,7 +3536,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {selectedMapId && !isCombinedMapSelected && (
+          {selectedMapId && !isCombinedMapSelected && selectedMapCanEdit && (
             <div
               className={`absolute z-40 ${
                 isMapFullscreen ? "bottom-6 left-6" : "bottom-3 left-3"
@@ -3100,7 +3654,7 @@ export default function DashboardPage() {
                     interests.find((i) => i.id === selectedTopic.id)?.related_topics ||
                     []
                   }
-                  readOnly={isCombinedMapSelected}
+                  readOnly={isCombinedMapSelected || !selectedMapCanEdit}
                   connectingFrom={connectingFrom}
                   isExpanded={topicPanelExpanded}
                   onToggleExpand={() =>
@@ -3115,8 +3669,12 @@ export default function DashboardPage() {
                   }}
                   onStartConnect={handleStartConnect}
                   onOpenNotes={() => {
-                    if (isCombinedMapSelected) {
-                      setError("Combined map is read-only. Edit notes in a specific map.");
+                    if (isCombinedMapSelected || !selectedMapCanEdit) {
+                      setError(
+                        isCombinedMapSelected
+                          ? "Combined map is read-only. Edit notes in a specific map."
+                          : "You only have view access to this map."
+                      );
                       return;
                     }
                     setNotesTopic(selectedTopic);
@@ -3412,10 +3970,15 @@ export default function DashboardPage() {
                                   </a>
                                   <button
                                     onClick={() => handleSaveEvidenceSource(source)}
-                                    disabled={isCombinedMapSelected || saved || saving}
+                                    disabled={
+                                      isCombinedMapSelected ||
+                                      !selectedMapCanEdit ||
+                                      saved ||
+                                      saving
+                                    }
                                     className="px-2 py-1 rounded-md border border-emerald-600/70 text-emerald-300 text-xs disabled:opacity-60"
                                   >
-                                    {isCombinedMapSelected
+                                    {isCombinedMapSelected || !selectedMapCanEdit
                                       ? "Read-only"
                                       : saved
                                         ? "Saved"
@@ -3449,7 +4012,7 @@ export default function DashboardPage() {
                     </div>
                   )}
 
-                  {!isCombinedMapSelected && (
+                  {!isCombinedMapSelected && selectedMapCanEdit && (
                     <details className="rounded-md border border-blue-800/40 bg-blue-950/10 px-3 py-2">
                       <summary className="cursor-pointer select-none text-xs text-blue-200">
                         Add your own paper link
@@ -3544,11 +4107,12 @@ export default function DashboardPage() {
                                 onClick={() => handleDeleteSavedEvidence(source.id)}
                                 disabled={
                                   isCombinedMapSelected ||
+                                  !selectedMapCanEdit ||
                                   deletingEvidenceId === source.id
                                 }
                                 className="text-[11px] text-red-300 hover:text-red-200 disabled:opacity-50"
                               >
-                                {isCombinedMapSelected
+                                {isCombinedMapSelected || !selectedMapCanEdit
                                   ? "Read-only"
                                   : deletingEvidenceId === source.id
                                   ? "Removing..."
@@ -3590,7 +4154,11 @@ export default function DashboardPage() {
                             key={template}
                             type="button"
                             onClick={() => handleAppendEdgeNoteTemplate(template)}
-                            disabled={edgeNotesLoading || isCombinedMapSelected}
+                            disabled={
+                              edgeNotesLoading ||
+                              isCombinedMapSelected ||
+                              !selectedMapCanEdit
+                            }
                             className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-blue-500/60 hover:text-blue-200 disabled:opacity-60"
                           >
                             {template.split(":")[0]}
@@ -3605,7 +4173,11 @@ export default function DashboardPage() {
                         if (edgeNotesError) setEdgeNotesError("");
                       }}
                       placeholder="Capture claims, caveats, and why this link matters..."
-                      disabled={edgeNotesLoading || isCombinedMapSelected}
+                      disabled={
+                        edgeNotesLoading ||
+                        isCombinedMapSelected ||
+                        !selectedMapCanEdit
+                      }
                       className="w-full min-h-[100px] rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
                     />
                     <div className="flex items-center justify-between gap-2">
@@ -3631,11 +4203,12 @@ export default function DashboardPage() {
                         disabled={
                           edgeNotesLoading ||
                           edgeNotesSaving ||
-                          isCombinedMapSelected
+                          isCombinedMapSelected ||
+                          !selectedMapCanEdit
                         }
                         className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-sm text-white"
                       >
-                        {isCombinedMapSelected
+                        {isCombinedMapSelected || !selectedMapCanEdit
                           ? "Read-only"
                           : edgeNotesSaving
                             ? "Saving..."

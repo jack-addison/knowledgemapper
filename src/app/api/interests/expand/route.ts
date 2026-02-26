@@ -1,20 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { createAdminSupabaseClient } from "@/lib/supabase-admin";
 import { generateEmbedding, suggestRelatedTopics } from "@/lib/openai";
-
-async function validateUserMap(
-  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
-  userId: string,
-  mapId: string
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("maps")
-    .select("id")
-    .eq("id", mapId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  return !error && Boolean(data);
-}
+import { getMapAccess } from "@/lib/map-access";
 
 export async function POST(request: NextRequest) {
   const supabase = await createServerSupabaseClient();
@@ -27,25 +15,31 @@ export async function POST(request: NextRequest) {
   }
 
   const { topics, mapId } = await request.json();
-
   if (!Array.isArray(topics) || topics.length === 0) {
     return NextResponse.json(
       { error: "Topics array is required" },
       { status: 400 }
     );
   }
-
   if (!mapId || typeof mapId !== "string") {
     return NextResponse.json({ error: "mapId is required" }, { status: 400 });
   }
 
-  const validMap = await validateUserMap(supabase, user.id, mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
+  if (!access.canEdit) {
+    return NextResponse.json(
+      { error: "You only have view access to this map." },
+      { status: 403 }
+    );
+  }
 
+  const admin = createAdminSupabaseClient();
   const added: string[] = [];
   for (const name of topics) {
+    if (typeof name !== "string" || name.trim().length === 0) continue;
     try {
       const [embeddingResult, relatedResult] = await Promise.allSettled([
         generateEmbedding(name),
@@ -57,9 +51,9 @@ export async function POST(request: NextRequest) {
       const related_topics =
         relatedResult.status === "fulfilled" ? relatedResult.value : [];
 
-      const { error } = await supabase.from("interests").insert({
+      const { error } = await admin.from("interests").insert({
         user_id: user.id,
-        map_id: mapId,
+        map_id: access.mapId,
         name: name.trim(),
         embedding,
         related_topics,

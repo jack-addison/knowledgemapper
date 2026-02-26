@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-
-type SupabaseClient = Awaited<ReturnType<typeof createServerSupabaseClient>>;
+import { createAdminSupabaseClient } from "@/lib/supabase-admin";
+import { getMapAccess } from "@/lib/map-access";
 
 interface ParsedTopicParams {
   mapId: string;
@@ -84,32 +84,16 @@ function parseSource(source: unknown): SourcePayload | null {
   };
 }
 
-async function validateUserMap(
-  supabase: SupabaseClient,
-  userId: string,
-  mapId: string
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("maps")
-    .select("id")
-    .eq("id", mapId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  return !error && Boolean(data);
-}
-
-async function validateUserInterest(
-  supabase: SupabaseClient,
-  userId: string,
+async function validateMapInterest(
   mapId: string,
   interestId: string
 ): Promise<boolean> {
-  const { data, error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
     .from("interests")
     .select("id")
     .eq("id", interestId)
     .eq("map_id", mapId)
-    .eq("user_id", userId)
     .maybeSingle();
 
   return !error && Boolean(data);
@@ -129,7 +113,6 @@ export async function GET(request: NextRequest) {
     request.nextUrl.searchParams.get("mapId"),
     request.nextUrl.searchParams.get("interestId")
   );
-
   if (!parsed) {
     return NextResponse.json(
       { error: "mapId and interestId are required" },
@@ -137,26 +120,21 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const validMap = await validateUserMap(supabase, user.id, parsed.mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, parsed.mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
 
-  const validInterest = await validateUserInterest(
-    supabase,
-    user.id,
-    parsed.mapId,
-    parsed.interestId
-  );
+  const validInterest = await validateMapInterest(access.mapId, parsed.interestId);
   if (!validInterest) {
     return NextResponse.json({ error: "Invalid interestId" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
     .from("interest_evidence")
     .select("*")
-    .eq("user_id", user.id)
-    .eq("map_id", parsed.mapId)
+    .eq("map_id", access.mapId)
     .eq("interest_id", parsed.interestId)
     .order("created_at", { ascending: false });
 
@@ -191,26 +169,28 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const validMap = await validateUserMap(supabase, user.id, parsed.mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, parsed.mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
+  if (!access.canEdit) {
+    return NextResponse.json(
+      { error: "You only have view access to this map." },
+      { status: 403 }
+    );
+  }
 
-  const validInterest = await validateUserInterest(
-    supabase,
-    user.id,
-    parsed.mapId,
-    parsed.interestId
-  );
+  const validInterest = await validateMapInterest(access.mapId, parsed.interestId);
   if (!validInterest) {
     return NextResponse.json({ error: "Invalid interestId" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
     .from("interest_evidence")
     .insert({
       user_id: user.id,
-      map_id: parsed.mapId,
+      map_id: access.mapId,
       interest_id: parsed.interestId,
       title: source.title,
       url: source.url,
@@ -225,11 +205,10 @@ export async function POST(request: NextRequest) {
 
   if (error) {
     if (error.code === "23505") {
-      const { data: existing, error: existingError } = await supabase
+      const { data: existing, error: existingError } = await admin
         .from("interest_evidence")
         .select("*")
-        .eq("user_id", user.id)
-        .eq("map_id", parsed.mapId)
+        .eq("map_id", access.mapId)
         .eq("interest_id", parsed.interestId)
         .eq("url", source.url)
         .maybeSingle();
@@ -273,27 +252,28 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const validMap = await validateUserMap(supabase, user.id, parsed.mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, parsed.mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
+  if (!access.canEdit) {
+    return NextResponse.json(
+      { error: "You only have view access to this map." },
+      { status: 403 }
+    );
+  }
 
-  const validInterest = await validateUserInterest(
-    supabase,
-    user.id,
-    parsed.mapId,
-    parsed.interestId
-  );
+  const validInterest = await validateMapInterest(access.mapId, parsed.interestId);
   if (!validInterest) {
     return NextResponse.json({ error: "Invalid interestId" }, { status: 400 });
   }
 
-  const { error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { error } = await admin
     .from("interest_evidence")
     .delete()
     .eq("id", id)
-    .eq("user_id", user.id)
-    .eq("map_id", parsed.mapId)
+    .eq("map_id", access.mapId)
     .eq("interest_id", parsed.interestId);
 
   if (error) {

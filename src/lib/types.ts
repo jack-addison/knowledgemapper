@@ -19,6 +19,9 @@ export interface KnowledgeMap {
   is_public?: boolean;
   share_slug?: string | null;
   shared_at?: string | null;
+  role?: "owner" | "editor" | "viewer";
+  can_edit?: boolean;
+  can_manage?: boolean;
 }
 
 export interface GraphNode {

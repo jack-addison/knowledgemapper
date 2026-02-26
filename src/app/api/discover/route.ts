@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { createAdminSupabaseClient } from "@/lib/supabase-admin";
 import { generateRecommendations } from "@/lib/openai";
+import { getMapAccess, listAccessibleMapIds } from "@/lib/map-access";
 
 interface InterestRow {
   name: string;
@@ -94,15 +96,31 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const admin = createAdminSupabaseClient();
   const mapId = request.nextUrl.searchParams.get("mapId");
-  let query = supabase
+
+  let targetMapIds: string[] = [];
+  if (typeof mapId === "string" && mapId.trim().length > 0) {
+    const access = await getMapAccess(user.id, mapId.trim());
+    if (!access) {
+      return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
+    }
+    targetMapIds = [access.mapId];
+  } else {
+    targetMapIds = await listAccessibleMapIds(user.id);
+  }
+
+  if (targetMapIds.length === 0) {
+    return NextResponse.json(
+      { error: "Add some interests first" },
+      { status: 400 }
+    );
+  }
+
+  const query = admin
     .from("interests")
     .select("name, related_topics")
-    .eq("user_id", user.id);
-
-  if (mapId) {
-    query = query.eq("map_id", mapId);
-  }
+    .in("map_id", targetMapIds);
 
   const { data: interests, error } = await query;
 

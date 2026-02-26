@@ -16,6 +16,11 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const supabase = createClient();
+  const safeNext = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const next = new URLSearchParams(window.location.search).get("next");
+    return typeof next === "string" && next.startsWith("/") ? next : null;
+  }, []);
 
   const passwordChecks = useMemo(
     () => [
@@ -54,7 +59,7 @@ export default function SignupPage() {
     if (error) {
       setError(error.message);
     } else if (data.session) {
-      router.push("/dashboard");
+      router.push(safeNext || "/dashboard");
       return;
     } else {
       setSuccess(
@@ -197,7 +202,10 @@ export default function SignupPage() {
 
           <p className="text-center text-gray-400 mt-5 text-sm">
             Already have an account?{" "}
-            <Link href="/login" className="text-blue-300 hover:underline">
+            <Link
+              href={safeNext ? `/login?next=${encodeURIComponent(safeNext)}` : "/login"}
+              className="text-blue-300 hover:underline"
+            >
               Log in
             </Link>
           </p>

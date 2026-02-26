@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { createAdminSupabaseClient } from "@/lib/supabase-admin";
 import { computeTdaMapHealth } from "@/lib/tda";
 import type { Interest } from "@/lib/types";
+import { getMapAccess } from "@/lib/map-access";
 
 export async function GET(request: NextRequest) {
   const supabase = await createServerSupabaseClient();
@@ -18,22 +20,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "mapId is required" }, { status: 400 });
   }
 
-  const { data: map, error: mapError } = await supabase
-    .from("maps")
-    .select("id")
-    .eq("id", mapId)
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (mapError || !map) {
+  const access = await getMapAccess(user.id, mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
     .from("interests")
     .select("id, user_id, map_id, name, embedding, related_topics, notes, created_at")
-    .eq("user_id", user.id)
-    .eq("map_id", mapId)
+    .eq("map_id", access.mapId)
     .order("created_at", { ascending: true });
 
   if (error) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -13,6 +13,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const supabase = createClient();
+  const safeNext = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const next = new URLSearchParams(window.location.search).get("next");
+    return typeof next === "string" && next.startsWith("/") ? next : null;
+  }, []);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -28,7 +33,7 @@ export default function LoginPage() {
       setError(error.message);
       setLoading(false);
     } else {
-      router.push("/dashboard");
+      router.push(safeNext || "/dashboard");
     }
   }
 
@@ -120,7 +125,10 @@ export default function LoginPage() {
 
           <p className="text-center text-gray-400 mt-5 text-sm">
             Don&apos;t have an account?{" "}
-            <Link href="/signup" className="text-blue-300 hover:underline">
+            <Link
+              href={safeNext ? `/signup?next=${encodeURIComponent(safeNext)}` : "/signup"}
+              className="text-blue-300 hover:underline"
+            >
               Sign up
             </Link>
           </p>

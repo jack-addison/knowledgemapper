@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-
-type SupabaseClient = Awaited<ReturnType<typeof createServerSupabaseClient>>;
+import { createAdminSupabaseClient } from "@/lib/supabase-admin";
+import { getMapAccess } from "@/lib/map-access";
 
 interface ParsedEdgeParams {
   mapId: string;
@@ -48,40 +48,6 @@ function parseEdgeParams(
     interestAId: pair.a,
     interestBId: pair.b,
   };
-}
-
-async function validateUserMap(
-  supabase: SupabaseClient,
-  userId: string,
-  mapId: string
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("maps")
-    .select("id")
-    .eq("id", mapId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  return !error && Boolean(data);
-}
-
-async function validateEdgeInterests(
-  supabase: SupabaseClient,
-  userId: string,
-  mapId: string,
-  interestAId: string,
-  interestBId: string
-): Promise<boolean> {
-  if (interestAId === interestBId) return false;
-
-  const { data, error } = await supabase
-    .from("interests")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("map_id", mapId)
-    .in("id", [interestAId, interestBId]);
-
-  if (error || !data) return false;
-  return data.length === 2;
 }
 
 function parseSource(source: unknown): SourcePayload | null {
@@ -134,6 +100,24 @@ function parseSource(source: unknown): SourcePayload | null {
   };
 }
 
+async function validateEdgeInterests(
+  mapId: string,
+  interestAId: string,
+  interestBId: string
+): Promise<boolean> {
+  if (interestAId === interestBId) return false;
+
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
+    .from("interests")
+    .select("id")
+    .eq("map_id", mapId)
+    .in("id", [interestAId, interestBId]);
+
+  if (error || !data) return false;
+  return data.length === 2;
+}
+
 export async function GET(request: NextRequest) {
   const supabase = await createServerSupabaseClient();
   const {
@@ -149,7 +133,6 @@ export async function GET(request: NextRequest) {
     request.nextUrl.searchParams.get("interestAId"),
     request.nextUrl.searchParams.get("interestBId")
   );
-
   if (!parsed) {
     return NextResponse.json(
       { error: "mapId, interestAId, and interestBId are required" },
@@ -157,15 +140,13 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const validMap = await validateUserMap(supabase, user.id, parsed.mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, parsed.mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
   }
 
   const validInterests = await validateEdgeInterests(
-    supabase,
-    user.id,
-    parsed.mapId,
+    access.mapId,
     parsed.interestAId,
     parsed.interestBId
   );
@@ -176,11 +157,11 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
     .from("edge_evidence")
     .select("*")
-    .eq("user_id", user.id)
-    .eq("map_id", parsed.mapId)
+    .eq("map_id", access.mapId)
     .eq("interest_a_id", parsed.interestAId)
     .eq("interest_b_id", parsed.interestBId)
     .order("created_at", { ascending: false });
@@ -208,7 +189,6 @@ export async function POST(request: NextRequest) {
     typeof body.interestAId === "string" ? body.interestAId : null,
     typeof body.interestBId === "string" ? body.interestBId : null
   );
-
   if (!parsed) {
     return NextResponse.json(
       { error: "mapId, interestAId, and interestBId are required" },
@@ -221,15 +201,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid source payload" }, { status: 400 });
   }
 
-  const validMap = await validateUserMap(supabase, user.id, parsed.mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, parsed.mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
+  }
+  if (!access.canEdit) {
+    return NextResponse.json(
+      { error: "You only have view access to this map." },
+      { status: 403 }
+    );
   }
 
   const validInterests = await validateEdgeInterests(
-    supabase,
-    user.id,
-    parsed.mapId,
+    access.mapId,
     parsed.interestAId,
     parsed.interestBId
   );
@@ -240,11 +224,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { data, error } = await admin
     .from("edge_evidence")
     .insert({
       user_id: user.id,
-      map_id: parsed.mapId,
+      map_id: access.mapId,
       interest_a_id: parsed.interestAId,
       interest_b_id: parsed.interestBId,
       title: source.title,
@@ -260,11 +245,10 @@ export async function POST(request: NextRequest) {
 
   if (error) {
     if (error.code === "23505") {
-      const { data: existing, error: existingError } = await supabase
+      const { data: existing, error: existingError } = await admin
         .from("edge_evidence")
         .select("*")
-        .eq("user_id", user.id)
-        .eq("map_id", parsed.mapId)
+        .eq("map_id", access.mapId)
         .eq("interest_a_id", parsed.interestAId)
         .eq("interest_b_id", parsed.interestBId)
         .eq("url", source.url)
@@ -310,15 +294,19 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const validMap = await validateUserMap(supabase, user.id, parsed.mapId);
-  if (!validMap) {
+  const access = await getMapAccess(user.id, parsed.mapId);
+  if (!access) {
     return NextResponse.json({ error: "Invalid mapId" }, { status: 400 });
+  }
+  if (!access.canEdit) {
+    return NextResponse.json(
+      { error: "You only have view access to this map." },
+      { status: 403 }
+    );
   }
 
   const validInterests = await validateEdgeInterests(
-    supabase,
-    user.id,
-    parsed.mapId,
+    access.mapId,
     parsed.interestAId,
     parsed.interestBId
   );
@@ -329,12 +317,12 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const { error } = await supabase
+  const admin = createAdminSupabaseClient();
+  const { error } = await admin
     .from("edge_evidence")
     .delete()
     .eq("id", evidenceId)
-    .eq("user_id", user.id)
-    .eq("map_id", parsed.mapId)
+    .eq("map_id", access.mapId)
     .eq("interest_a_id", parsed.interestAId)
     .eq("interest_b_id", parsed.interestBId);
 
