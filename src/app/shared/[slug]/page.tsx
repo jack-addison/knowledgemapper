@@ -26,6 +26,7 @@ interface LearningResource {
 }
 
 const DEFAULT_LINK_FORCE_SCALE = 3;
+const DEFAULT_EDGE_RENDER_TOP_K = 5;
 const DEFAULT_LAYOUT_MODE: GraphLayoutMode = "umap";
 
 function clampValue(value: number, min: number, max: number): number {
@@ -193,6 +194,20 @@ export default function SharedMapPage() {
     0.5,
     3,
     DEFAULT_LINK_FORCE_SCALE
+  );
+  const sharedEdgeRenderTopK = Math.max(
+    0,
+    Math.min(
+      12,
+      Math.trunc(
+        parseNumberParam(
+          searchParams.get("edgeTopK"),
+          0,
+          12,
+          DEFAULT_EDGE_RENDER_TOP_K
+        )
+      )
+    )
   );
   const sharedLayoutMode = parseLayoutModeParam(searchParams.get("layoutMode"));
 
@@ -435,6 +450,7 @@ export default function SharedMapPage() {
             selectedNodeId={selectedTopicId}
             selectedLink={selectedLink}
             linkForceScale={sharedLinkForceScale}
+            renderLinkTopK={sharedEdgeRenderTopK}
             layoutMode={sharedLayoutMode}
             onNodeClick={(nodeId) => {
               setSelectedTopicId(nodeId);

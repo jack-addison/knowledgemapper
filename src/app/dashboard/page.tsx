@@ -29,6 +29,7 @@ import { computeTdaMapHealth } from "@/lib/tda";
 import { createClient as createSupabaseBrowserClient } from "@/lib/supabase";
 
 const DEFAULT_LINK_FORCE_SCALE = 3;
+const DEFAULT_EDGE_RENDER_TOP_K = 5;
 const MAP_LAYOUT_STORAGE_PREFIX = "km-map-layout-settings:";
 const COMBINED_MAP_ID = "__combined__";
 const COMBINED_MAP_NAME = "Combined (All Maps)";
@@ -163,6 +164,7 @@ interface MapLayoutSettings {
   similarityThreshold: number;
   clusterThreshold: number;
   linkForceScale: number;
+  edgeRenderTopK: number;
   layoutMode: GraphLayoutMode;
 }
 
@@ -185,6 +187,7 @@ const DEFAULT_MAP_LAYOUT_SETTINGS: MapLayoutSettings = {
   similarityThreshold: DEFAULT_SIMILARITY_THRESHOLD,
   clusterThreshold: DEFAULT_CLUSTER_THRESHOLD,
   linkForceScale: DEFAULT_LINK_FORCE_SCALE,
+  edgeRenderTopK: DEFAULT_EDGE_RENDER_TOP_K,
   layoutMode: "umap",
 };
 
@@ -208,6 +211,12 @@ function getStoredMapLayoutSettings(mapId: string): MapLayoutSettings {
       parsed.layoutMode === "umap" || parsed.layoutMode === "classic"
         ? parsed.layoutMode
         : DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode;
+    const parsedEdgeRenderTopK = Number(
+      parsed.edgeRenderTopK ?? DEFAULT_EDGE_RENDER_TOP_K
+    );
+    const safeEdgeRenderTopK = Number.isFinite(parsedEdgeRenderTopK)
+      ? Math.max(0, Math.min(12, Math.trunc(parsedEdgeRenderTopK)))
+      : DEFAULT_EDGE_RENDER_TOP_K;
 
     return {
       similarityThreshold: clampValue(
@@ -225,6 +234,7 @@ function getStoredMapLayoutSettings(mapId: string): MapLayoutSettings {
         0.5,
         3
       ),
+      edgeRenderTopK: safeEdgeRenderTopK,
       layoutMode: parsedLayoutMode,
     };
   } catch {
@@ -243,6 +253,7 @@ function saveMapLayoutSettings(
     similarityThreshold: updates.similarityThreshold ?? current.similarityThreshold,
     clusterThreshold: updates.clusterThreshold ?? current.clusterThreshold,
     linkForceScale: updates.linkForceScale ?? current.linkForceScale,
+    edgeRenderTopK: updates.edgeRenderTopK ?? current.edgeRenderTopK,
     layoutMode: updates.layoutMode ?? current.layoutMode,
   };
 
@@ -355,6 +366,7 @@ function buildPublicShareUrlWithLayout(
     similarityThreshold: number;
     clusterThreshold: number;
     linkForceScale: number;
+    edgeRenderTopK: number;
     layoutMode: GraphLayoutMode;
   }
 ): string {
@@ -362,12 +374,14 @@ function buildPublicShareUrlWithLayout(
   const similarity = clampValue(settings.similarityThreshold, 0.05, 0.6);
   const cluster = clampValue(settings.clusterThreshold, 0.2, 0.7);
   const linkForce = clampValue(settings.linkForceScale, 0.5, 3);
+  const edgeTopK = Math.max(0, Math.min(12, Math.trunc(settings.edgeRenderTopK)));
 
   if (typeof window !== "undefined") {
     const url = new URL(baseUrl, window.location.origin);
     url.searchParams.set("similarity", similarity.toFixed(2));
     url.searchParams.set("cluster", cluster.toFixed(2));
     url.searchParams.set("linkForce", linkForce.toFixed(2));
+    url.searchParams.set("edgeTopK", String(edgeTopK));
     url.searchParams.set("layoutMode", settings.layoutMode);
     return url.toString();
   }
@@ -376,6 +390,7 @@ function buildPublicShareUrlWithLayout(
     similarity: similarity.toFixed(2),
     cluster: cluster.toFixed(2),
     linkForce: linkForce.toFixed(2),
+    edgeTopK: String(edgeTopK),
     layoutMode: settings.layoutMode,
   });
   return `${baseUrl}?${params.toString()}`;
@@ -621,6 +636,9 @@ export default function DashboardPage() {
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
   const [linkForceScale, setLinkForceScale] = useState(DEFAULT_LINK_FORCE_SCALE);
+  const [edgeRenderTopK, setEdgeRenderTopK] = useState(
+    DEFAULT_EDGE_RENDER_TOP_K
+  );
   const [layoutMode, setLayoutMode] = useState<GraphLayoutMode>(
     DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode
   );
@@ -891,6 +909,7 @@ export default function DashboardPage() {
       setThreshold(DEFAULT_SIMILARITY_THRESHOLD);
       setClusterThreshold(DEFAULT_CLUSTER_THRESHOLD);
       setLinkForceScale(DEFAULT_LINK_FORCE_SCALE);
+      setEdgeRenderTopK(DEFAULT_EDGE_RENDER_TOP_K);
       setLayoutMode(DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode);
       setTdaHealth(null);
       setTdaError("");
@@ -902,6 +921,7 @@ export default function DashboardPage() {
     setThreshold(settings.similarityThreshold);
     setClusterThreshold(settings.clusterThreshold);
     setLinkForceScale(settings.linkForceScale);
+    setEdgeRenderTopK(settings.edgeRenderTopK);
     setLayoutMode(settings.layoutMode);
   }, [selectedMapId]);
 
@@ -1363,6 +1383,14 @@ export default function DashboardPage() {
     }
   }
 
+  function handleEdgeRenderTopKChange(value: number) {
+    const next = Math.max(0, Math.min(12, Math.trunc(value)));
+    setEdgeRenderTopK(next);
+    if (selectedMapId) {
+      saveMapLayoutSettings(selectedMapId, { edgeRenderTopK: next });
+    }
+  }
+
   function handleLayoutModeChange(mode: GraphLayoutMode) {
     setLayoutMode(mode);
     if (selectedMapId) {
@@ -1546,6 +1574,7 @@ export default function DashboardPage() {
               similarityThreshold: threshold,
               clusterThreshold,
               linkForceScale,
+              edgeRenderTopK,
               layoutMode,
             })
           : typeof data.shareUrl === "string"
@@ -1622,6 +1651,7 @@ export default function DashboardPage() {
       similarityThreshold: threshold,
       clusterThreshold,
       linkForceScale,
+      edgeRenderTopK,
       layoutMode,
     });
     setShareError("");
@@ -2738,6 +2768,7 @@ export default function DashboardPage() {
           similarityThreshold: threshold,
           clusterThreshold,
           linkForceScale,
+          edgeRenderTopK,
           layoutMode,
         })
       : null;
@@ -3412,6 +3443,28 @@ export default function DashboardPage() {
                 Higher makes connected nodes pull toward each other more.
               </span>
             </div>
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-gray-400 whitespace-nowrap w-24">
+                Link filter
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={12}
+                step={1}
+                value={edgeRenderTopK}
+                onChange={(e) =>
+                  handleEdgeRenderTopKChange(parseInt(e.target.value, 10))
+                }
+                className="w-48 h-1 accent-cyan-500"
+              />
+              <span className="text-xs text-gray-500 font-mono w-10">
+                {edgeRenderTopK === 0 ? "Off" : edgeRenderTopK}
+              </span>
+              <span className="text-xs text-gray-500">
+                Show strongest links per node first (0 disables filtering).
+              </span>
+            </div>
           </div>
         </details>
 
@@ -3518,6 +3571,7 @@ export default function DashboardPage() {
               selectedLink={selectedLink}
               connectingFromName={connectingFrom}
               linkForceScale={linkForceScale}
+              renderLinkTopK={edgeRenderTopK}
               layoutMode={layoutMode}
               fastSettle={fastSettleMode}
               fullscreen={isMapFullscreen}
