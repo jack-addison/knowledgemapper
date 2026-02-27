@@ -632,6 +632,12 @@ export default function DashboardPage() {
   const [topicPanelEntering, setTopicPanelEntering] = useState(false);
   const [edgePanelEntering, setEdgePanelEntering] = useState(false);
   const [assistantPanelOpen, setAssistantPanelOpen] = useState(false);
+  const [assistantAutoAskRequest, setAssistantAutoAskRequest] = useState<{
+    id: string;
+    prompt: string;
+    mode: "grounded" | "general";
+    scope: "map" | "node" | "edge";
+  } | null>(null);
 
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
@@ -3659,6 +3665,7 @@ export default function DashboardPage() {
             isCombinedMap={isCombinedMapSelected}
             selectedTopic={selectedTopic}
             selectedLink={selectedLink}
+            autoAskRequest={assistantAutoAskRequest}
             fullscreen={isMapFullscreen}
             onOpenChange={setAssistantPanelOpen}
             onMapCreated={(mapId) => {
@@ -3745,6 +3752,23 @@ export default function DashboardPage() {
                   onLoadResearchEvidence={handleLoadTopicEvidence}
                   onSaveResearchEvidence={handleSaveTopicEvidenceSource}
                   onDeleteResearchEvidence={handleDeleteSavedTopicEvidence}
+                  onAskAssistantQuestion={(question) => {
+                    if (isCombinedMapSelected) {
+                      setError(
+                        "Assistant currently supports individual maps, not Combined."
+                      );
+                      return;
+                    }
+                    closeTopicPanelImmediate();
+                    setAssistantAutoAskRequest({
+                      id: `node-research-${Date.now()}-${Math.random()
+                        .toString(36)
+                        .slice(2, 8)}`,
+                      prompt: question,
+                      mode: "general",
+                      scope: "node",
+                    });
+                  }}
                 />
               </div>
             </div>

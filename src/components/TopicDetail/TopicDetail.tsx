@@ -30,6 +30,7 @@ interface TopicDetailProps {
   onLoadResearchEvidence: () => Promise<void> | void;
   onSaveResearchEvidence: (source: EvidenceSource) => Promise<boolean> | boolean;
   onDeleteResearchEvidence: (id: string) => Promise<void> | void;
+  onAskAssistantQuestion?: (question: string) => void;
 }
 
 function getYouTubeSearchUrl(topic: string): string {
@@ -180,6 +181,7 @@ export default function TopicDetail({
   onLoadResearchEvidence,
   onSaveResearchEvidence,
   onDeleteResearchEvidence,
+  onAskAssistantQuestion,
 }: TopicDetailProps) {
   const [expanding, setExpanding] = useState(false);
   const [expandResult, setExpandResult] = useState<string | null>(null);
@@ -500,16 +502,19 @@ export default function TopicDetail({
 
             <div className="space-y-1.5">
               <p className="text-[11px] text-cyan-100/75">Suggested questions</p>
-              <ul className="space-y-1">
+              <div className="space-y-1">
                 {researchQuestions.map((question) => (
-                  <li
+                  <button
                     key={question}
-                    className="text-xs text-cyan-50/90 rounded-md border border-cyan-900/40 bg-cyan-950/30 px-2.5 py-1.5"
+                    type="button"
+                    onClick={() => onAskAssistantQuestion?.(question)}
+                    disabled={!onAskAssistantQuestion}
+                    className="w-full text-left text-xs text-cyan-50/90 rounded-md border border-cyan-900/40 bg-cyan-950/30 px-2.5 py-1.5 transition-colors hover:border-cyan-500/60 hover:bg-cyan-900/30 disabled:opacity-60"
                   >
                     {question}
-                  </li>
+                  </button>
                 ))}
-              </ul>
+              </div>
             </div>
 
             <div className="space-y-1.5">

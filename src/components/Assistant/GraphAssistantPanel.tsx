@@ -19,6 +19,12 @@ interface GraphAssistantPanelProps {
   isCombinedMap: boolean;
   selectedTopic: { id: string; name: string } | null;
   selectedLink: GraphLinkSelection | null;
+  autoAskRequest?: {
+    id: string;
+    prompt: string;
+    mode?: GraphAssistantMode;
+    scope?: GraphAssistantScope;
+  } | null;
   fullscreen?: boolean;
   onOpenChange?: (isOpen: boolean) => void;
   onMapCreated?: (mapId: string) => void;
@@ -99,6 +105,7 @@ export default function GraphAssistantPanel({
   isCombinedMap,
   selectedTopic,
   selectedLink,
+  autoAskRequest = null,
   fullscreen = false,
   onOpenChange,
   onMapCreated,
@@ -135,6 +142,7 @@ export default function GraphAssistantPanel({
   const [paperToolsOpen, setPaperToolsOpen] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const paperInputRef = useRef<HTMLInputElement | null>(null);
+  const handledAutoAskIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setMessages([]);
@@ -715,13 +723,18 @@ export default function GraphAssistantPanel({
     }
   }
 
-  async function handleAsk(directQuestion?: string) {
+  const handleAsk = useCallback(async (
+    directQuestion?: string,
+    options?: { mode?: GraphAssistantMode; scope?: GraphAssistantScope }
+  ) => {
     if (loading) return;
 
     const trimmed =
       typeof directQuestion === "string"
         ? directQuestion.trim()
         : question.trim();
+    const effectiveMode = options?.mode ?? assistantMode;
+    const effectiveScope = options?.scope ?? scope;
     if (!trimmed) {
       setError("Enter a question first.");
       return;
@@ -737,12 +750,12 @@ export default function GraphAssistantPanel({
       return;
     }
 
-    if (scope === "node" && !selectedTopic) {
+    if (effectiveScope === "node" && !selectedTopic) {
       setError("Select a node for Node scope.");
       return;
     }
 
-    if (scope === "edge" && !selectedLink) {
+    if (effectiveScope === "edge" && !selectedLink) {
       setError("Select an edge for Edge scope.");
       return;
     }
@@ -751,16 +764,18 @@ export default function GraphAssistantPanel({
       id: createMessageId(),
       role: "user",
       text: trimmed,
-      scope,
-      assistantMode,
+      scope: effectiveScope,
+      assistantMode: effectiveMode,
       createdAt: new Date().toISOString(),
       citations: [],
       suggestedFollowups: [],
       insufficientEvidence: false,
       externalPaperCount: 0,
-      nodeId: scope === "node" ? selectedTopic?.id || null : null,
-      interestAId: scope === "edge" ? selectedLink?.sourceId || null : null,
-      interestBId: scope === "edge" ? selectedLink?.targetId || null : null,
+      nodeId: effectiveScope === "node" ? selectedTopic?.id || null : null,
+      interestAId:
+        effectiveScope === "edge" ? selectedLink?.sourceId || null : null,
+      interestBId:
+        effectiveScope === "edge" ? selectedLink?.targetId || null : null,
     };
     setMessages((prev) => [...prev, userMessage]);
     setQuestion("");
@@ -773,17 +788,17 @@ export default function GraphAssistantPanel({
 
     const payload: GraphAssistantQueryRequest = {
       mapId,
-      scope,
-      assistantMode,
+      scope: effectiveScope,
+      assistantMode: effectiveMode,
       question: trimmed,
       allowExternalPapers,
     };
 
-    if (scope === "node" && selectedTopic) {
+    if (effectiveScope === "node" && selectedTopic) {
       payload.nodeId = selectedTopic.id;
     }
 
-    if (scope === "edge" && selectedLink) {
+    if (effectiveScope === "edge" && selectedLink) {
       payload.interestAId = selectedLink.sourceId;
       payload.interestBId = selectedLink.targetId;
       payload.edgeSimilarity = selectedLink.similarity;
@@ -835,7 +850,47 @@ export default function GraphAssistantPanel({
     } finally {
       setLoading(false);
     }
-  }
+  }, [
+    allowExternalPapers,
+    assistantMode,
+    isCombinedMap,
+    loading,
+    mapId,
+    question,
+    scope,
+    selectedLink,
+    selectedTopic,
+  ]);
+
+  useEffect(() => {
+    if (!autoAskRequest) return;
+    if (handledAutoAskIdRef.current === autoAskRequest.id) return;
+
+    const prompt = autoAskRequest.prompt.trim();
+    if (!prompt) return;
+
+    handledAutoAskIdRef.current = autoAskRequest.id;
+
+    const requestedMode = autoAskRequest.mode ?? "general";
+    const requestedScope = autoAskRequest.scope ?? "node";
+    const resolvedScope: GraphAssistantScope =
+      requestedScope === "node"
+        ? scopeDisabled.node
+          ? "map"
+          : "node"
+        : requestedScope === "edge"
+          ? scopeDisabled.edge
+            ? "map"
+            : "edge"
+          : "map";
+
+    setAssistantMode(requestedMode);
+    setScope(resolvedScope);
+    setIsOpen(true);
+    setError("");
+    setQuestion(prompt);
+    void handleAsk(prompt, { mode: requestedMode, scope: resolvedScope });
+  }, [autoAskRequest, handleAsk, scopeDisabled.edge, scopeDisabled.map, scopeDisabled.node]);
 
   if (!hasMap) return null;
 
@@ -942,57 +997,6 @@ export default function GraphAssistantPanel({
             )}
             {assistantMode === "general" && (
               <div className="mt-2 space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleBuildMapFromPrompt}
-                    disabled={buildMapLoading || extendMapLoading || loading}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/70 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:border-emerald-500 disabled:opacity-60"
-                  >
-                    <svg
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      className="h-3.5 w-3.5"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M10 2.8l1.5 3 3.3.5-2.4 2.4.6 3.3L10 10.4 7 12l.6-3.3L5.2 6.3l3.3-.5L10 2.8z"
-                        stroke="currentColor"
-                        strokeWidth="1.2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                    {buildMapLoading ? "Building..." : "Build"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExtendMapFromPrompt}
-                    disabled={
-                      extendMapLoading ||
-                      buildMapLoading ||
-                      loading ||
-                      isCombinedMap
-                    }
-                    className="inline-flex items-center gap-1.5 rounded-md border border-cyan-600/70 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200 hover:border-cyan-500 disabled:opacity-60"
-                  >
-                    <svg
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      className="h-3.5 w-3.5"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M4 10h12M10 4v12"
-                        stroke="currentColor"
-                        strokeWidth="1.4"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                    {extendMapLoading ? "Extending..." : "Extend"}
-                  </button>
-                </div>
                 <div className="rounded-md border border-cyan-900/60 bg-cyan-950/15">
                   <button
                     type="button"
@@ -1435,6 +1439,31 @@ export default function GraphAssistantPanel({
                     placeholder="Ask about this map, node, or edge..."
                     className="flex-1 resize-none rounded-md border border-gray-700 bg-gray-900 px-2.5 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
                   />
+                  {assistantMode === "general" && (
+                    <button
+                      type="button"
+                      onClick={handleBuildMapFromPrompt}
+                      disabled={buildMapLoading || extendMapLoading || loading}
+                      className="self-stretch rounded-md border border-emerald-500/70 bg-emerald-500/15 px-3 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-60"
+                    >
+                      {buildMapLoading ? "Building..." : "Build"}
+                    </button>
+                  )}
+                  {assistantMode === "general" && (
+                    <button
+                      type="button"
+                      onClick={handleExtendMapFromPrompt}
+                      disabled={
+                        extendMapLoading ||
+                        buildMapLoading ||
+                        loading ||
+                        isCombinedMap
+                      }
+                      className="self-stretch rounded-md border border-indigo-500/70 bg-indigo-500/15 px-3 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/25 disabled:opacity-60"
+                    >
+                      {extendMapLoading ? "Extending..." : "Extend"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
