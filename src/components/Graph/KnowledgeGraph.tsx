@@ -1357,7 +1357,11 @@ export default function KnowledgeGraph({
 
   if (displayData.nodes.length === 0) {
     return (
-      <div className="flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50" style={{ height: "500px" }}>
+      <div
+        ref={containerRef}
+        className="flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50"
+        style={{ height: `${dimensions.height}px` }}
+      >
         <p className="text-gray-500">
           Add some interests to see your knowledge graph
         </p>

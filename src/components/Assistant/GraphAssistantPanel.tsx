@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   GraphAssistantBuildMapResponse,
+  GraphAssistantExtractPaperResponse,
   GraphAssistantExtendMapResponse,
   GraphAssistantMode,
   GraphAssistantCitation,
@@ -65,6 +66,14 @@ interface ActionStatus {
   text: string;
 }
 
+interface PaperContextEntry {
+  id: string;
+  fileName: string;
+  paperTitle: string;
+  textCharCount: number | null;
+  createdAt: string;
+}
+
 function createMessageId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -77,6 +86,12 @@ function scopeLabel(scope: GraphAssistantScope): string {
   if (scope === "edge") return "Edge";
   return "Map";
 }
+
+const COMPOSER_SUGGESTIONS = [
+  "Biggest evidence gaps?",
+  "Strongest node summary",
+  "Next investigation step",
+];
 
 export default function GraphAssistantPanel({
   mapId,
@@ -108,7 +123,18 @@ export default function GraphAssistantPanel({
   const [extendMapLoading, setExtendMapLoading] = useState(false);
   const [extendMapFeedback, setExtendMapFeedback] = useState("");
   const [extendMapError, setExtendMapError] = useState("");
+  const [extractPaperLoading, setExtractPaperLoading] = useState(false);
+  const [extractPaperFeedback, setExtractPaperFeedback] = useState("");
+  const [extractPaperError, setExtractPaperError] = useState("");
+  const [paperFile, setPaperFile] = useState<File | null>(null);
+  const [paperFocusPrompt, setPaperFocusPrompt] = useState("");
+  const [paperMaxTopics, setPaperMaxTopics] = useState(18);
+  const [paperContexts, setPaperContexts] = useState<PaperContextEntry[]>([]);
+  const [paperContextsLoading, setPaperContextsLoading] = useState(false);
+  const [paperContextId, setPaperContextId] = useState("");
+  const [paperToolsOpen, setPaperToolsOpen] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const paperInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setMessages([]);
@@ -127,6 +153,19 @@ export default function GraphAssistantPanel({
     setExtendMapLoading(false);
     setExtendMapFeedback("");
     setExtendMapError("");
+    setExtractPaperLoading(false);
+    setExtractPaperFeedback("");
+    setExtractPaperError("");
+    setPaperFile(null);
+    setPaperFocusPrompt("");
+    setPaperMaxTopics(18);
+    setPaperContexts([]);
+    setPaperContextsLoading(false);
+    setPaperContextId("");
+    setPaperToolsOpen(false);
+    if (paperInputRef.current) {
+      paperInputRef.current.value = "";
+    }
   }, [mapId]);
 
   useEffect(() => {
@@ -170,6 +209,47 @@ export default function GraphAssistantPanel({
     edge: !hasMap || isCombinedMap || !selectedLink,
   };
 
+  const fetchPaperContexts = useCallback(async () => {
+    if (!mapId || isCombinedMap) {
+      setPaperContexts([]);
+      setPaperContextId("");
+      return;
+    }
+
+    setPaperContextsLoading(true);
+    try {
+      const params = new URLSearchParams({ mapId });
+      const res = await fetch(`/api/assistant/paper-contexts?${params.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to load saved paper contexts."
+        );
+      }
+
+      const contexts = Array.isArray(data.contexts)
+        ? (data.contexts as PaperContextEntry[])
+        : [];
+      setPaperContexts(contexts);
+      setPaperContextId((prev) => {
+        if (prev && contexts.some((item) => item.id === prev)) return prev;
+        return contexts[0]?.id || "";
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to load saved paper contexts.";
+      setExtractPaperError(message);
+    } finally {
+      setPaperContextsLoading(false);
+    }
+  }, [isCombinedMap, mapId]);
+
+  useEffect(() => {
+    void fetchPaperContexts();
+  }, [fetchPaperContexts]);
+
   async function handleBuildMapFromPrompt() {
     const prompt = question.trim();
     if (!prompt) {
@@ -182,6 +262,8 @@ export default function GraphAssistantPanel({
     setBuildMapFeedback("");
     setExtendMapError("");
     setExtendMapFeedback("");
+    setExtractPaperError("");
+    setExtractPaperFeedback("");
 
     try {
       const res = await fetch("/api/assistant/build-map", {
@@ -233,6 +315,8 @@ export default function GraphAssistantPanel({
     setExtendMapFeedback("");
     setBuildMapError("");
     setBuildMapFeedback("");
+    setExtractPaperError("");
+    setExtractPaperFeedback("");
 
     try {
       const res = await fetch("/api/assistant/extend-map", {
@@ -269,6 +353,153 @@ export default function GraphAssistantPanel({
       setExtendMapError(message);
     } finally {
       setExtendMapLoading(false);
+    }
+  }
+
+  async function handleExtractTermsFromPaper() {
+    if (!mapId) {
+      setExtractPaperError("Select a map first.");
+      return;
+    }
+    if (isCombinedMap) {
+      setExtractPaperError("Combined map cannot be extended from a paper.");
+      return;
+    }
+    if (!paperFile) {
+      setExtractPaperError("Choose a paper file first (PDF or text).");
+      return;
+    }
+
+    setExtractPaperLoading(true);
+    setExtractPaperError("");
+    setExtractPaperFeedback("");
+    setBuildMapError("");
+    setBuildMapFeedback("");
+    setExtendMapError("");
+    setExtendMapFeedback("");
+
+    try {
+      const formData = new FormData();
+      formData.append("mapId", mapId);
+      formData.append("file", paperFile);
+      formData.append("maxTopics", String(paperMaxTopics));
+      if (paperFocusPrompt.trim()) {
+        formData.append("focusPrompt", paperFocusPrompt.trim());
+      }
+
+      const res = await fetch("/api/assistant/extract-paper-terms", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to extract terms from this paper."
+        );
+      }
+
+      const result = data as GraphAssistantExtractPaperResponse;
+      if (result.createdCount === 0) {
+        setExtractPaperFeedback(
+          "No new unique topics were added from this paper."
+        );
+      } else {
+        setExtractPaperFeedback(
+          `Added ${result.createdCount} topic${
+            result.createdCount === 1 ? "" : "s"
+          } from "${result.paperTitle}".`
+        );
+      }
+      if (result.paperContextId) {
+        setPaperContextId(result.paperContextId);
+      }
+      setPaperFile(null);
+      setPaperFocusPrompt("");
+      if (paperInputRef.current) {
+        paperInputRef.current.value = "";
+      }
+      await fetchPaperContexts();
+      onMapExtended?.();
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to extract terms from this paper.";
+      setExtractPaperError(message);
+    } finally {
+      setExtractPaperLoading(false);
+    }
+  }
+
+  async function handleExtractTermsFromSavedContext() {
+    if (!mapId) {
+      setExtractPaperError("Select a map first.");
+      return;
+    }
+    if (isCombinedMap) {
+      setExtractPaperError("Combined map cannot be extended from a paper.");
+      return;
+    }
+    if (!paperContextId) {
+      setExtractPaperError("Select a saved paper context first.");
+      return;
+    }
+
+    setExtractPaperLoading(true);
+    setExtractPaperError("");
+    setExtractPaperFeedback("");
+    setBuildMapError("");
+    setBuildMapFeedback("");
+    setExtendMapError("");
+    setExtendMapFeedback("");
+
+    try {
+      const formData = new FormData();
+      formData.append("mapId", mapId);
+      formData.append("paperContextId", paperContextId);
+      formData.append("maxTopics", String(paperMaxTopics));
+      if (paperFocusPrompt.trim()) {
+        formData.append("focusPrompt", paperFocusPrompt.trim());
+      }
+
+      const res = await fetch("/api/assistant/extract-paper-terms", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Failed to extract additional terms from saved paper."
+        );
+      }
+
+      const result = data as GraphAssistantExtractPaperResponse;
+      if (result.createdCount === 0) {
+        setExtractPaperFeedback(
+          "No new unique topics were added from the saved paper context."
+        );
+      } else {
+        setExtractPaperFeedback(
+          `Added ${result.createdCount} topic${
+            result.createdCount === 1 ? "" : "s"
+          } from saved context "${result.paperTitle}".`
+        );
+      }
+      onMapExtended?.();
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to extract additional terms from saved paper.";
+      setExtractPaperError(message);
+    } finally {
+      setExtractPaperLoading(false);
     }
   }
 
@@ -484,8 +715,13 @@ export default function GraphAssistantPanel({
     }
   }
 
-  async function handleAsk() {
-    const trimmed = question.trim();
+  async function handleAsk(directQuestion?: string) {
+    if (loading) return;
+
+    const trimmed =
+      typeof directQuestion === "string"
+        ? directQuestion.trim()
+        : question.trim();
     if (!trimmed) {
       setError("Enter a question first.");
       return;
@@ -618,7 +854,7 @@ export default function GraphAssistantPanel({
       )}
 
       {isOpen && (
-        <aside className={`absolute z-40 flex h-[min(82vh,760px)] w-[min(46rem,calc(100%-1.5rem))] flex-col rounded-xl border border-gray-700 bg-gray-950/98 shadow-2xl ${dockOffsetClass}`}>
+        <aside className={`absolute z-40 flex h-[min(82vh,760px)] w-[min(46rem,calc(100%-1.5rem))] flex-col rounded-xl border border-gray-700/90 bg-gray-950/98 shadow-2xl backdrop-blur-[1px] ${dockOffsetClass}`}>
           <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
             <div>
               <p className="text-sm font-semibold text-white">Graph Assistant</p>
@@ -632,14 +868,14 @@ export default function GraphAssistantPanel({
                   setError("");
                   setMessageStatuses({});
                 }}
-                className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+                className="h-9 rounded-md border border-gray-700 px-3 text-xs font-medium text-gray-300 hover:border-gray-500 hover:text-white"
               >
                 Clear
               </button>
               <button
                 type="button"
                 onClick={() => setIsOpen(false)}
-                className="text-sm text-gray-400 hover:text-white"
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-gray-700 text-sm text-gray-400 hover:border-gray-500 hover:text-white"
               >
                 ✕
               </button>
@@ -711,9 +947,23 @@ export default function GraphAssistantPanel({
                     type="button"
                     onClick={handleBuildMapFromPrompt}
                     disabled={buildMapLoading || extendMapLoading || loading}
-                    className="rounded-md border border-emerald-600/70 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:border-emerald-500 disabled:opacity-60"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/70 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:border-emerald-500 disabled:opacity-60"
                   >
-                    {buildMapLoading ? "Building..." : "Build map from prompt"}
+                    <svg
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M10 2.8l1.5 3 3.3.5-2.4 2.4.6 3.3L10 10.4 7 12l.6-3.3L5.2 6.3l3.3-.5L10 2.8z"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    {buildMapLoading ? "Building..." : "Build"}
                   </button>
                   <button
                     type="button"
@@ -724,10 +974,260 @@ export default function GraphAssistantPanel({
                       loading ||
                       isCombinedMap
                     }
-                    className="rounded-md border border-cyan-600/70 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200 hover:border-cyan-500 disabled:opacity-60"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-cyan-600/70 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200 hover:border-cyan-500 disabled:opacity-60"
                   >
-                    {extendMapLoading ? "Extending..." : "Extend current map"}
+                    <svg
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M4 10h12M10 4v12"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    {extendMapLoading ? "Extending..." : "Extend"}
                   </button>
+                </div>
+                <div className="rounded-md border border-cyan-900/60 bg-cyan-950/15">
+                  <button
+                    type="button"
+                    onClick={() => setPaperToolsOpen((prev) => !prev)}
+                    className="flex w-full items-center justify-between px-2.5 py-2 text-left"
+                  >
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-cyan-200">
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M6 2.8h6l4 4V17a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3.8a1 1 0 0 1 1-1z"
+                          stroke="currentColor"
+                          strokeWidth="1.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M12 2.8V7h4"
+                          stroke="currentColor"
+                          strokeWidth="1.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      Paper tools
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-400">
+                      {paperContexts.length > 0 ? `${paperContexts.length} saved` : "No saved"}
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        className={`h-3.5 w-3.5 transition-transform ${
+                          paperToolsOpen ? "rotate-180" : ""
+                        }`}
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M5 8l5 5 5-5"
+                          stroke="currentColor"
+                          strokeWidth="1.4"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                  </button>
+
+                  {paperToolsOpen && (
+                    <div className="space-y-2 px-2.5 pb-2">
+                      <p className="text-[11px] text-gray-400">
+                        Uploaded paper contexts are available to assistant chat.
+                      </p>
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[11px] text-gray-400">Saved paper contexts</p>
+                          {paperContextsLoading && (
+                            <span className="text-[11px] text-gray-500">Loading...</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={paperContextId}
+                            onChange={(e) => setPaperContextId(e.target.value)}
+                            className="flex-1 rounded-md border border-gray-700 bg-gray-900 px-2 py-1.5 text-[11px] text-gray-100 focus:border-cyan-500 focus:outline-none"
+                          >
+                            <option value="">Select saved paper context</option>
+                            {paperContexts.map((context) => (
+                              <option key={context.id} value={context.id}>
+                                {context.paperTitle}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={handleExtractTermsFromSavedContext}
+                            disabled={
+                              extractPaperLoading ||
+                              buildMapLoading ||
+                              extendMapLoading ||
+                              loading ||
+                              isCombinedMap ||
+                              !paperContextId
+                            }
+                            className="inline-flex items-center gap-1 rounded-md border border-cyan-600/70 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-200 hover:border-cyan-500 disabled:opacity-60"
+                          >
+                            <svg
+                              viewBox="0 0 20 20"
+                              fill="none"
+                              className="h-3.5 w-3.5"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M16 10a6 6 0 1 1-1.7-4.2M16 4.7v3.5h-3.5"
+                                stroke="currentColor"
+                                strokeWidth="1.3"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                            Add more
+                          </button>
+                        </div>
+                        {paperContexts.length === 0 && !paperContextsLoading && (
+                          <p className="text-[11px] text-gray-500">
+                            Upload a paper once and it will appear here for reuse.
+                          </p>
+                        )}
+                      </div>
+                      <input
+                        ref={paperInputRef}
+                        type="file"
+                        accept=".pdf,.txt,.md,.markdown,.tex,text/plain,application/pdf"
+                        onChange={(e) => {
+                          const nextFile = e.target.files?.[0] || null;
+                          setPaperFile(nextFile);
+                        }}
+                        className="hidden"
+                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => paperInputRef.current?.click()}
+                          className="inline-flex items-center gap-1 rounded-md border border-gray-700 bg-gray-900 px-2.5 py-1 text-[11px] text-gray-200 hover:border-gray-500"
+                        >
+                          <svg
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            className="h-3.5 w-3.5"
+                            aria-hidden="true"
+                          >
+                            <path
+                              d="M10 13V3M10 3l-3 3m3-3l3 3M4 13.5V16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-2.5"
+                              stroke="currentColor"
+                              strokeWidth="1.2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                          {paperFile ? "Change file" : "Upload"}
+                        </button>
+                        <span className="max-w-[19rem] truncate text-[11px] text-gray-400">
+                          {paperFile ? paperFile.name : "No file selected"}
+                        </span>
+                        {paperFile && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPaperFile(null);
+                              if (paperInputRef.current) {
+                                paperInputRef.current.value = "";
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+                          >
+                            <svg
+                              viewBox="0 0 20 20"
+                              fill="none"
+                              className="h-3.5 w-3.5"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M5 5l10 10M15 5L5 15"
+                                stroke="currentColor"
+                                strokeWidth="1.3"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={paperFocusPrompt}
+                        onChange={(e) => setPaperFocusPrompt(e.target.value)}
+                        placeholder="Optional extraction focus (e.g. datasets + failure modes)"
+                        className="w-full rounded-md border border-gray-700 bg-gray-900 px-2 py-1.5 text-[11px] text-gray-100 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
+                      />
+                      <div className="flex items-center gap-2">
+                        <label className="text-[11px] text-gray-400">Max topics</label>
+                        <input
+                          type="number"
+                          min={6}
+                          max={30}
+                          step={1}
+                          value={paperMaxTopics}
+                          onChange={(e) => {
+                            const parsed = Number(e.target.value);
+                            if (!Number.isFinite(parsed)) return;
+                            const clamped = Math.max(6, Math.min(30, Math.trunc(parsed)));
+                            setPaperMaxTopics(clamped);
+                          }}
+                          className="w-20 rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-[11px] text-gray-100 focus:border-cyan-500 focus:outline-none"
+                        />
+                        <span className="text-[11px] text-gray-500">
+                          6-30 per upload
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleExtractTermsFromPaper}
+                        disabled={
+                          extractPaperLoading ||
+                          buildMapLoading ||
+                          extendMapLoading ||
+                          loading ||
+                          isCombinedMap
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600/70 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:border-emerald-500 disabled:opacity-60"
+                      >
+                        <svg
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M10 3.5l2 4 4.5.7-3.3 3.2.8 4.5-4-2.1-4 2.1.8-4.5L3.5 8.2 8 7.5l2-4z"
+                            stroke="currentColor"
+                            strokeWidth="1.2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        {extractPaperLoading
+                          ? "Analyzing paper..."
+                          : "Add terms from paper"}
+                      </button>
+                    </div>
+                  )}
                 </div>
                 {buildMapFeedback && (
                   <p className="text-[11px] text-emerald-300">{buildMapFeedback}</p>
@@ -741,201 +1241,226 @@ export default function GraphAssistantPanel({
                 {extendMapError && (
                   <p className="text-[11px] text-red-300">{extendMapError}</p>
                 )}
+                {extractPaperFeedback && (
+                  <p className="text-[11px] text-emerald-300">
+                    {extractPaperFeedback}
+                  </p>
+                )}
+                {extractPaperError && (
+                  <p className="text-[11px] text-red-300">{extractPaperError}</p>
+                )}
               </div>
             )}
           </div>
 
-          <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
-            {messages.length === 0 && (
-              <div className="rounded-md border border-gray-800 bg-gray-900/60 px-3 py-2 text-xs text-gray-400">
-                Ask about research gaps, strongest evidence, contradictory notes, or
-                how a node/edge fits the map.
-              </div>
-            )}
+          <div className="flex-1 overflow-y-auto px-3 py-3">
+            <div className="flex min-h-full flex-col gap-3">
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`max-w-[92%] rounded-md border px-3 py-2 ${
+                    message.role === "user"
+                      ? "ml-auto border-blue-500/30 bg-blue-500/10 text-blue-100"
+                      : "border-gray-700 bg-gray-900/80 text-gray-100"
+                  }`}
+                >
+                  <p className="text-[11px] uppercase tracking-wide text-gray-400">
+                    {message.role === "user"
+                      ? "You"
+                      : `Assistant · ${
+                          message.assistantMode === "general"
+                            ? "General"
+                            : `${scopeLabel(message.scope)} scope`
+                        }`}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">
+                    {message.text}
+                  </p>
 
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`max-w-[92%] rounded-md border px-3 py-2 ${
-                  message.role === "user"
-                    ? "ml-auto border-blue-500/30 bg-blue-500/10 text-blue-100"
-                    : "border-gray-700 bg-gray-900/80 text-gray-100"
-                }`}
-              >
-                <p className="text-[11px] uppercase tracking-wide text-gray-400">
-                  {message.role === "user"
-                    ? "You"
-                    : `Assistant · ${
-                        message.assistantMode === "general"
-                          ? "General"
-                          : `${scopeLabel(message.scope)} scope`
-                      }`}
-                </p>
-                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">
-                  {message.text}
-                </p>
-
-                {message.role === "assistant" && message.assistantMode === "grounded" && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {message.scope === "node" && message.nodeId && (
-                      <button
-                        type="button"
-                        onClick={() => handleSaveAnswerToNodeNotes(message)}
-                        disabled={activeActionKey === `${message.id}:node-notes`}
-                        className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-60"
-                      >
-                        {activeActionKey === `${message.id}:node-notes`
-                          ? "Saving..."
-                          : "Save to node notes"}
-                      </button>
-                    )}
-                    {message.scope === "edge" &&
-                      message.interestAId &&
-                      message.interestBId && (
+                  {message.role === "assistant" && message.assistantMode === "grounded" && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {message.scope === "node" && message.nodeId && (
                         <button
                           type="button"
-                          onClick={() => handleSaveAnswerToEdgeNotes(message)}
-                          disabled={activeActionKey === `${message.id}:edge-notes`}
+                          onClick={() => handleSaveAnswerToNodeNotes(message)}
+                          disabled={activeActionKey === `${message.id}:node-notes`}
                           className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-60"
                         >
-                          {activeActionKey === `${message.id}:edge-notes`
+                          {activeActionKey === `${message.id}:node-notes`
                             ? "Saving..."
-                            : "Save to edge notes"}
+                            : "Save to node notes"}
                         </button>
                       )}
-                    {((message.scope === "node" && message.nodeId) ||
-                      (message.scope === "edge" &&
+                      {message.scope === "edge" &&
                         message.interestAId &&
-                        message.interestBId)) && (
-                      <button
-                        type="button"
-                        onClick={() => handleSaveCitedPapers(message)}
-                        disabled={activeActionKey === `${message.id}:papers`}
-                        className="rounded-md border border-cyan-700/60 px-2 py-1 text-[11px] text-cyan-200 hover:border-cyan-500 hover:text-cyan-100 disabled:opacity-60"
-                      >
-                        {activeActionKey === `${message.id}:papers`
-                          ? "Saving..."
-                          : "Save cited papers"}
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {message.role === "assistant" &&
-                  message.assistantMode === "grounded" &&
-                  message.citations.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    <p className="text-[11px] text-gray-400">Citations</p>
-                    {message.citations.map((citation) => (
-                      <div
-                        key={citation.id}
-                        className="rounded border border-gray-800 bg-gray-950/60 px-2 py-1.5"
-                      >
-                        {citation.url ? (
-                          <a
-                            href={citation.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-cyan-200 hover:text-cyan-100"
+                        message.interestBId && (
+                          <button
+                            type="button"
+                            onClick={() => handleSaveAnswerToEdgeNotes(message)}
+                            disabled={activeActionKey === `${message.id}:edge-notes`}
+                            className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-60"
                           >
-                            {citation.label}
-                          </a>
-                        ) : (
-                          <p className="text-xs text-gray-200">{citation.label}</p>
+                            {activeActionKey === `${message.id}:edge-notes`
+                              ? "Saving..."
+                              : "Save to edge notes"}
+                          </button>
                         )}
-                        <p className="mt-0.5 text-[11px] text-gray-500">
-                          {citation.snippet}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {message.role === "assistant" &&
-                  message.suggestedFollowups.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {message.suggestedFollowups.map((followup) => (
+                      {((message.scope === "node" && message.nodeId) ||
+                        (message.scope === "edge" &&
+                          message.interestAId &&
+                          message.interestBId)) && (
                         <button
-                          key={`${message.id}-${followup}`}
                           type="button"
-                          onClick={() => setQuestion(followup)}
-                          className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+                          onClick={() => handleSaveCitedPapers(message)}
+                          disabled={activeActionKey === `${message.id}:papers`}
+                          className="rounded-md border border-cyan-700/60 px-2 py-1 text-[11px] text-cyan-200 hover:border-cyan-500 hover:text-cyan-100 disabled:opacity-60"
                         >
-                          {followup}
+                          {activeActionKey === `${message.id}:papers`
+                            ? "Saving..."
+                            : "Save cited papers"}
                         </button>
+                      )}
+                    </div>
+                  )}
+
+                  {message.role === "assistant" &&
+                    message.assistantMode === "grounded" &&
+                    message.citations.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      <p className="text-[11px] text-gray-400">Citations</p>
+                      {message.citations.map((citation) => (
+                        <div
+                          key={citation.id}
+                          className="rounded border border-gray-800 bg-gray-950/60 px-2 py-1.5"
+                        >
+                          {citation.url ? (
+                            <a
+                              href={citation.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-cyan-200 hover:text-cyan-100"
+                            >
+                              {citation.label}
+                            </a>
+                          ) : (
+                            <p className="text-xs text-gray-200">{citation.label}</p>
+                          )}
+                          <p className="mt-0.5 text-[11px] text-gray-500">
+                            {citation.snippet}
+                          </p>
+                        </div>
                       ))}
                     </div>
                   )}
 
-                {message.role === "assistant" && message.insufficientEvidence && (
-                  <p className="mt-2 text-[11px] text-amber-300">
-                    Limited map evidence for this answer.
-                  </p>
-                )}
-                {message.role === "assistant" &&
-                  message.assistantMode === "grounded" &&
-                  message.externalPaperCount > 0 && (
-                  <p className="mt-1 text-[11px] text-cyan-300">
-                    Included {message.externalPaperCount} external paper result
-                    {message.externalPaperCount === 1 ? "" : "s"}.
-                  </p>
-                )}
-                {message.role === "assistant" && messageStatuses[message.id]?.text && (
-                  <p
-                    className={`mt-1 text-[11px] ${
-                      messageStatuses[message.id]?.type === "error"
-                        ? "text-red-300"
-                        : "text-emerald-300"
-                    }`}
-                  >
-                    {messageStatuses[message.id]?.text}
-                  </p>
-                )}
-              </div>
-            ))}
+                  {message.role === "assistant" &&
+                    message.suggestedFollowups.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {message.suggestedFollowups.map((followup) => (
+                        <button
+                          key={`${message.id}-${followup}`}
+                          type="button"
+                          onClick={() => {
+                            void handleAsk(followup);
+                          }}
+                          className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+                        >
+                          {followup}
+                        </button>
+                        ))}
+                      </div>
+                    )}
 
-            {loading && (
-              <div className="max-w-[92%] rounded-md border border-cyan-700/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100">
-                Thinking...
-              </div>
-            )}
-            <div ref={endRef} />
-          </div>
-
-          <div className="border-t border-gray-800 px-3 py-2">
-            <textarea
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (!loading) handleAsk();
-                }
-              }}
-              rows={2}
-              placeholder="Ask about this map, node, or edge..."
-              className="w-full resize-none rounded-md border border-gray-700 bg-gray-900 px-2.5 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
-            />
-            <div className="mt-2 flex items-center justify-between gap-2">
-              {error ? (
-                <p className="text-xs text-red-300">{error}</p>
-              ) : (
-                <p className="text-[11px] text-gray-500">
-                  {assistantMode === "general"
-                    ? "General chat mode."
-                    : `Grounded answers from map context${
-                        allowExternalPapers ? " + external paper metadata." : "."
+                  {message.role === "assistant" && message.insufficientEvidence && (
+                    <p className="mt-2 text-[11px] text-amber-300">
+                      Limited map evidence for this answer.
+                    </p>
+                  )}
+                  {message.role === "assistant" &&
+                    message.assistantMode === "grounded" &&
+                    message.externalPaperCount > 0 && (
+                    <p className="mt-1 text-[11px] text-cyan-300">
+                      Included {message.externalPaperCount} external paper result
+                      {message.externalPaperCount === 1 ? "" : "s"}.
+                    </p>
+                  )}
+                  {message.role === "assistant" && messageStatuses[message.id]?.text && (
+                    <p
+                      className={`mt-1 text-[11px] ${
+                        messageStatuses[message.id]?.type === "error"
+                          ? "text-red-300"
+                          : "text-emerald-300"
                       }`}
-                </p>
+                    >
+                      {messageStatuses[message.id]?.text}
+                    </p>
+                  )}
+                </div>
+              ))}
+
+              {loading && (
+                <div className="max-w-[92%] rounded-md border border-cyan-700/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100">
+                  Thinking...
+                </div>
               )}
-              <button
-                type="button"
-                onClick={handleAsk}
-                disabled={loading}
-                className="rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500 disabled:opacity-60"
-              >
-                {loading ? "Asking..." : "Ask"}
-              </button>
+
+              <div className="mt-auto rounded-md border border-gray-800 bg-gray-950/80 px-2.5 py-2">
+                {messages.length === 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {COMPOSER_SUGGESTIONS.map((starter) => (
+                      <button
+                        key={starter}
+                        type="button"
+                        onClick={() => {
+                          void handleAsk(starter);
+                        }}
+                        className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-cyan-500/70 hover:text-cyan-100"
+                      >
+                        {starter}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-stretch gap-2">
+                  <textarea
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (!loading) handleAsk();
+                      }
+                    }}
+                    rows={2}
+                    placeholder="Ask about this map, node, or edge..."
+                    className="flex-1 resize-none rounded-md border border-gray-700 bg-gray-900 px-2.5 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleAsk();
+                    }}
+                    disabled={loading}
+                    className="self-stretch rounded-md border border-cyan-500/70 bg-cyan-500/20 px-4 text-sm font-semibold text-cyan-50 hover:bg-cyan-500/30 disabled:opacity-60"
+                  >
+                    {loading ? "Asking..." : "Ask"}
+                  </button>
+                </div>
+                <div className="mt-1 min-h-[1rem]">
+                  {error ? (
+                    <p className="text-xs text-red-300">{error}</p>
+                  ) : (
+                    <p className="text-[11px] text-gray-500">
+                      {assistantMode === "general"
+                        ? "General chat mode."
+                        : `Grounded answers from map context${
+                            allowExternalPapers ? " + external paper metadata." : "."
+                          }`}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div ref={endRef} />
             </div>
           </div>
         </aside>

@@ -228,3 +228,15 @@ export interface GraphAssistantExtendMapResponse {
   skippedCount: number;
   topics: string[];
 }
+
+export interface GraphAssistantExtractPaperResponse {
+  mapId: string;
+  mapName: string;
+  fileName: string;
+  paperTitle: string;
+  paperContextId?: string | null;
+  topicCount: number;
+  createdCount: number;
+  skippedCount: number;
+  topics: string[];
+}

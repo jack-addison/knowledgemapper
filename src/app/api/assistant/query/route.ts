@@ -15,6 +15,7 @@ type ContextDocKind =
   | "node_evidence"
   | "edge"
   | "edge_evidence"
+  | "paper_context"
   | "external_paper";
 
 interface OpenAlexAuthorship {
@@ -74,6 +75,14 @@ interface EdgeNotesRow {
   notes: string | null;
 }
 
+interface MapPaperContextRow {
+  id: string;
+  file_name: string;
+  paper_title: string;
+  extracted_text: string;
+  created_at: string;
+}
+
 interface AssistantContextDoc {
   id: string;
   kind: ContextDocKind;
@@ -101,6 +110,7 @@ interface ParsedPayload {
 const MAX_CONTEXT_DOCS = 18;
 const MAX_DOC_TEXT_CHARS = 900;
 const MAX_EXTERNAL_PAPERS = 5;
+const MAX_SAVED_PAPER_CONTEXTS = 24;
 const OPENALEX_WORKS_URL = "https://api.openalex.org/works";
 
 function normalizeString(value: unknown): string {
@@ -137,7 +147,13 @@ function normalizeAuthors(value: unknown): string[] {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
-    .slice(0, 8);
+      .slice(0, 8);
+}
+
+function isMissingTableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "42P01";
 }
 
 function tokenize(value: string): Set<string> {
@@ -148,6 +164,57 @@ function tokenize(value: string): Set<string> {
       .map((token) => token.trim())
       .filter((token) => token.length > 2)
   );
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function excerptAroundKeywords(
+  text: string,
+  keywords: string[],
+  maxChars = 420
+): string {
+  const normalized = normalizeWhitespace(text);
+  if (!normalized) return "";
+
+  const lower = normalized.toLowerCase();
+  let matchIndex = -1;
+  for (const keyword of keywords) {
+    const term = keyword.trim().toLowerCase();
+    if (term.length < 4) continue;
+    const index = lower.indexOf(term);
+    if (index >= 0) {
+      matchIndex = index;
+      break;
+    }
+  }
+
+  if (matchIndex < 0) {
+    return clampText(normalized, maxChars);
+  }
+
+  const start = Math.max(0, matchIndex - Math.floor(maxChars / 3));
+  return clampText(normalized.slice(start, start + maxChars), maxChars);
+}
+
+function findMentionedNodeIds(
+  text: string,
+  interests: InterestRow[],
+  maxMatches = 10
+): string[] {
+  const lower = text.toLowerCase();
+  const matches: string[] = [];
+
+  for (const interest of interests) {
+    const name = interest.name.trim().toLowerCase();
+    if (name.length < 3) continue;
+    if (!lower.includes(name)) continue;
+    matches.push(interest.id);
+    if (matches.length >= maxMatches) break;
+  }
+
+  return matches;
 }
 
 function edgeKey(a: string, b: string): string {
@@ -359,6 +426,9 @@ function scoreDoc(
   if (doc.kind === "node_evidence" || doc.kind === "edge_evidence") {
     score += 1;
   }
+  if (doc.kind === "paper_context") {
+    score += 2;
+  }
   if (doc.kind === "external_paper") {
     score += 2;
   }
@@ -552,6 +622,40 @@ export async function POST(request: NextRequest) {
           `Saved edge notes: ${edgeNotes}`;
       }
 
+      const {
+        data: paperContextRows,
+        error: paperContextError,
+      } = await supabase
+        .from("map_paper_contexts")
+        .select("id, file_name, paper_title, extracted_text, created_at")
+        .eq("user_id", user.id)
+        .eq("map_id", parsed.mapId)
+        .order("created_at", { ascending: false })
+        .limit(6)
+        .returns<MapPaperContextRow[]>();
+
+      if (paperContextError && !isMissingTableError(paperContextError)) {
+        return NextResponse.json({ error: paperContextError.message }, { status: 500 });
+      }
+
+      if (paperContextRows && paperContextRows.length > 0) {
+        const keywords = Array.from(tokenize(parsed.question));
+        const paperContextBlock = paperContextRows
+          .slice(0, 3)
+          .map((row, index) => {
+            const title = row.paper_title?.trim() || row.file_name || `Paper ${index + 1}`;
+            const snippet = excerptAroundKeywords(row.extracted_text || "", keywords, 260);
+            return (
+              `P${index + 1}: ${title}\n` +
+              `Source file: ${row.file_name}\n` +
+              `Excerpt: ${snippet || "No text excerpt available."}`
+            );
+          })
+          .join("\n\n");
+
+        focusContext += `\n\nSaved paper contexts:\n${paperContextBlock}`;
+      }
+
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.5,
@@ -560,7 +664,7 @@ export async function POST(request: NextRequest) {
           {
             role: "system",
             content:
-              "You are KnowledgeMapper's AI assistant. Answer general questions clearly and concisely, like a normal chat assistant. You may answer beyond map data. Use the provided focus context to keep the response oriented to the selected map/node/edge. If uncertain, say so. Return strict JSON with keys: answer (string), suggestedFollowups (array of short strings).",
+              "You are KnowledgeMapper's AI assistant. Answer general questions clearly and concisely, like a normal chat assistant. You may answer beyond map data. Use the provided focus context, including saved paper excerpts, to keep the response oriented to the selected map/node/edge. If uncertain, say so. Return strict JSON with keys: answer (string), suggestedFollowups (array of short strings).",
           },
           {
             role: "user",
@@ -603,7 +707,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const [interestsRes, interestEvidenceRes, edgeEvidenceRes, edgeNotesRes] =
+  const [interestsRes, interestEvidenceRes, edgeEvidenceRes, edgeNotesRes, paperContextRes] =
     await Promise.all([
       supabase
         .from("interests")
@@ -627,6 +731,14 @@ export async function POST(request: NextRequest) {
         .select("interest_a_id, interest_b_id, notes")
         .eq("user_id", user.id)
         .eq("map_id", parsed.mapId),
+      supabase
+        .from("map_paper_contexts")
+        .select("id, file_name, paper_title, extracted_text, created_at")
+        .eq("user_id", user.id)
+        .eq("map_id", parsed.mapId)
+        .order("created_at", { ascending: false })
+        .limit(MAX_SAVED_PAPER_CONTEXTS)
+        .returns<MapPaperContextRow[]>(),
     ]);
 
   if (interestsRes.error) {
@@ -644,11 +756,18 @@ export async function POST(request: NextRequest) {
   if (edgeNotesRes.error) {
     return NextResponse.json({ error: edgeNotesRes.error.message }, { status: 500 });
   }
+  if (paperContextRes.error && !isMissingTableError(paperContextRes.error)) {
+    return NextResponse.json({ error: paperContextRes.error.message }, { status: 500 });
+  }
 
   const interests = (interestsRes.data || []) as InterestRow[];
   const interestEvidence = (interestEvidenceRes.data || []) as InterestEvidenceRow[];
   const edgeEvidence = (edgeEvidenceRes.data || []) as EdgeEvidenceRow[];
   const edgeNotes = (edgeNotesRes.data || []) as EdgeNotesRow[];
+  const paperContexts =
+    paperContextRes.error && isMissingTableError(paperContextRes.error)
+      ? []
+      : ((paperContextRes.data || []) as MapPaperContextRow[]);
 
   const interestById = new Map<string, InterestRow>();
   for (const interest of interests) {
@@ -819,6 +938,39 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const paperContextKeywords = Array.from(tokenize(parsed.question));
+  for (const paperContext of paperContexts) {
+    const paperTitle = paperContext.paper_title?.trim() || paperContext.file_name || "Saved paper";
+    const sourceFile = paperContext.file_name?.trim() || "unknown file";
+    const extracted = paperContext.extracted_text || "";
+    const snippet = excerptAroundKeywords(extracted, paperContextKeywords, 500);
+    const text =
+      `Saved paper context: ${paperTitle}\n` +
+      `Source file: ${sourceFile}\n` +
+      `Excerpt: ${snippet || "No extracted text available."}`;
+    const nodeIds = findMentionedNodeIds(extracted, interests);
+
+    docs.push({
+      id: `paper-context:${paperContext.id}`,
+      kind: "paper_context",
+      title: `Saved paper: ${paperTitle}`,
+      text,
+      lowerText: text.toLowerCase(),
+      tokens: tokenize(text),
+      nodeIds,
+      edgeKey: null,
+      citation: {
+        id: `paper-context:${paperContext.id}`,
+        type: "paper",
+        label: `Saved paper: ${paperTitle}`,
+        snippet: clampText(snippet || "Saved uploaded paper context.", 220),
+        paperTitle,
+        reason: "Uploaded paper context saved in this map.",
+        sourceProvider: "saved-paper-context",
+      },
+    });
+  }
+
   if (parsed.scope === "edge" && selectedEdgeKey && selectedEdgeNodeIds.length === 2) {
     const sourceNode = interestById.get(selectedEdgeNodeIds[0]);
     const targetNode = interestById.get(selectedEdgeNodeIds[1]);
@@ -956,7 +1108,7 @@ export async function POST(request: NextRequest) {
         {
           role: "system",
           content:
-            "You are the KnowledgeMapper assistant. Answer using only the provided context blocks. Some blocks may be saved map evidence, and some may be external paper metadata. If the context is insufficient, clearly say so. Never claim to have used any source that is not in the provided blocks. Return strict JSON with keys: answer (string), citationIds (array of context ids like C1), insufficientEvidence (boolean), suggestedFollowups (array of short strings).",
+            "You are the KnowledgeMapper assistant. Answer using only the provided context blocks. Blocks may include saved map notes/evidence, saved uploaded paper contexts, and external paper metadata. If the context is insufficient, clearly say so. Never claim to have used any source that is not in the provided blocks. Return strict JSON with keys: answer (string), citationIds (array of context ids like C1), insufficientEvidence (boolean), suggestedFollowups (array of short strings).",
         },
         {
           role: "user",

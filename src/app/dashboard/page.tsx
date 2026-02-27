@@ -3751,16 +3751,36 @@ export default function DashboardPage() {
           )}
 
           {showNotesSidebar && notesTopic && (
-            <div className="absolute top-3 right-3 w-80 z-20 max-h-[calc(100%-1.5rem)] overflow-y-auto">
-              <NotesSidebar
-                topicName={notesTopic.name}
-                initialNotes={
-                  interests.find((interest) => interest.id === notesTopic.id)
-                    ?.notes || ""
+            <div
+              className={
+                isMapFullscreen
+                  ? "absolute inset-0 z-30 flex items-center justify-center p-4 bg-black/45"
+                  : "absolute top-3 right-3 z-20 w-[36rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
+              }
+              onClick={(event) => {
+                if (!isMapFullscreen) return;
+                if (event.target === event.currentTarget) {
+                  setNotesTopic(null);
                 }
-                onSave={(notes) => handleSaveNotes(notesTopic.id, notes)}
-                onClose={() => setNotesTopic(null)}
-              />
+              }}
+            >
+              <div
+                className={
+                  isMapFullscreen
+                    ? "w-full max-w-5xl h-[min(92vh,920px)]"
+                    : "h-full"
+                }
+              >
+                <NotesSidebar
+                  topicName={notesTopic.name}
+                  initialNotes={
+                    interests.find((interest) => interest.id === notesTopic.id)
+                      ?.notes || ""
+                  }
+                  onSave={(notes) => handleSaveNotes(notesTopic.id, notes)}
+                  onClose={() => setNotesTopic(null)}
+                />
+              </div>
             </div>
           )}
 
@@ -4232,7 +4252,7 @@ export default function DashboardPage() {
                         isCombinedMapSelected ||
                         !selectedMapCanEdit
                       }
-                      className="w-full min-h-[100px] rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                      className="w-full min-h-[180px] rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
                     />
                     <div className="flex items-center justify-between gap-2">
                       <span
