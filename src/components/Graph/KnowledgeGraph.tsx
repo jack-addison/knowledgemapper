@@ -25,8 +25,120 @@ const CLUSTER_COLORS = [
   "#e11d48", // rose
 ];
 
+const CLUSTER_NODE_PREFIX = "__cluster__:";
+const CLUSTER_DOUBLE_CLICK_WINDOW_MS = 320;
+const CLUSTER_LABEL_STOP_WORDS = new Set([
+  "and",
+  "for",
+  "the",
+  "with",
+  "from",
+  "into",
+  "onto",
+  "that",
+  "this",
+  "those",
+  "these",
+  "about",
+  "over",
+  "under",
+  "between",
+  "through",
+  "across",
+  "using",
+  "use",
+  "based",
+  "study",
+  "studies",
+  "analysis",
+  "approach",
+  "methods",
+  "method",
+  "systems",
+  "system",
+  "introduction",
+  "advanced",
+  "foundations",
+  "fundamentals",
+]);
+
+function clusterNodeId(clusterId: number): string {
+  return `${CLUSTER_NODE_PREFIX}${clusterId}`;
+}
+
+function isClusterNodeId(nodeId: string): boolean {
+  return nodeId.startsWith(CLUSTER_NODE_PREFIX);
+}
+
 function getClusterColor(cluster: number): string {
   return CLUSTER_COLORS[cluster % CLUSTER_COLORS.length];
+}
+
+function collectClusterLabelTokens(name: string): string[] {
+  return name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        !CLUSTER_LABEL_STOP_WORDS.has(token) &&
+        !/^\d+$/.test(token)
+    );
+}
+
+function titleCaseToken(token: string): string {
+  if (token.length === 0) return token;
+  return `${token[0].toUpperCase()}${token.slice(1)}`;
+}
+
+function truncateLabel(label: string, maxLength = 38): string {
+  if (label.length <= maxLength) return label;
+  return `${label.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function buildClusterSemanticLabel(clusterNodes: Array<{ name: string }>): string {
+  if (clusterNodes.length === 0) return "Cluster";
+  if (clusterNodes.length === 1) {
+    return truncateLabel(clusterNodes[0].name.trim() || "Cluster");
+  }
+
+  const tokenFrequency = new Map<string, number>();
+  for (const node of clusterNodes) {
+    const uniqueTokens = new Set(collectClusterLabelTokens(node.name));
+    for (const token of uniqueTokens) {
+      tokenFrequency.set(token, (tokenFrequency.get(token) || 0) + 1);
+    }
+  }
+
+  if (tokenFrequency.size > 0) {
+    const sortedTokens = Array.from(tokenFrequency.entries()).sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      if (b[0].length !== a[0].length) return b[0].length - a[0].length;
+      return a[0].localeCompare(b[0]);
+    });
+
+    const tokenThreshold = Math.max(2, Math.ceil(clusterNodes.length * 0.25));
+    const strongTokens = sortedTokens
+      .filter(([, count]) => count >= tokenThreshold)
+      .slice(0, 2);
+    const pickedTokens = (strongTokens.length > 0 ? strongTokens : sortedTokens)
+      .slice(0, 2)
+      .map(([token]) => titleCaseToken(token));
+
+    if (pickedTokens.length > 0) {
+      return truncateLabel(pickedTokens.join(" / "));
+    }
+  }
+
+  const exemplars = [...clusterNodes]
+    .map((node) => node.name.trim())
+    .filter((name) => name.length > 0)
+    .sort((a, b) => a.length - b.length || a.localeCompare(b))
+    .slice(0, 2);
+
+  if (exemplars.length === 0) return "Cluster";
+  return truncateLabel(exemplars.join(" + "));
 }
 
 function getEndpointId(endpoint: unknown): string | null {
@@ -260,6 +372,16 @@ function buildUmapAnchors(
   return { anchors, strengths };
 }
 
+type DisplayNode = GraphData["nodes"][number] & {
+  isSuperNode?: boolean;
+  memberCount?: number;
+};
+
+type DisplayLink = GraphData["links"][number] & {
+  isAggregate?: boolean;
+  aggregateCount?: number;
+};
+
 interface KnowledgeGraphProps {
   data: GraphData;
   selectedNodeId?: string | null;
@@ -291,6 +413,7 @@ export default function KnowledgeGraph({
 }: KnowledgeGraphProps) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const lastClusterClickRef = useRef<{ nodeId: string; at: number } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
   const [clusterOffsetState, setClusterOffsetState] = useState<{
@@ -301,6 +424,9 @@ export default function KnowledgeGraph({
     offsets: {},
   });
   const [forcesApplied, setForcesApplied] = useState(0);
+  const [clusterOverviewEnabled, setClusterOverviewEnabled] = useState(false);
+  const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
+  const [focusedClusterId, setFocusedClusterId] = useState<number | null>(null);
   const clusterSignature = useMemo(
     () =>
       `${layoutMode}|` +
@@ -313,6 +439,183 @@ export default function KnowledgeGraph({
         .join("|"),
     [data.nodes, layoutMode]
   );
+  const clusterNodeMap = useMemo(() => {
+    const map = new Map<number, DisplayNode[]>();
+    for (const node of data.nodes) {
+      const nodes = map.get(node.cluster) || [];
+      nodes.push(node);
+      map.set(node.cluster, nodes);
+    }
+    return map;
+  }, [data.nodes]);
+  const selectedClusterId = useMemo(() => {
+    if (!selectedNodeId) return null;
+    const selected = data.nodes.find((node) => node.id === selectedNodeId);
+    return selected ? selected.cluster : null;
+  }, [data.nodes, selectedNodeId]);
+  const activeFocusedClusterId = useMemo(
+    () =>
+      clusterOverviewEnabled &&
+      focusedClusterId !== null &&
+      clusterNodeMap.has(focusedClusterId)
+        ? focusedClusterId
+        : null,
+    [clusterNodeMap, clusterOverviewEnabled, focusedClusterId]
+  );
+  const effectiveExpandedClusters = useMemo(() => {
+    if (!clusterOverviewEnabled) return new Set<number>();
+
+    const validClusters = new Set<number>(Array.from(clusterNodeMap.keys()));
+    const next = new Set<number>();
+    for (const clusterId of expandedClusters) {
+      if (validClusters.has(clusterId)) {
+        next.add(clusterId);
+      }
+    }
+    if (selectedClusterId !== null && validClusters.has(selectedClusterId)) {
+      next.add(selectedClusterId);
+    }
+    return next;
+  }, [clusterNodeMap, clusterOverviewEnabled, expandedClusters, selectedClusterId]);
+
+  const displayData = useMemo<{
+    nodes: DisplayNode[];
+    links: DisplayLink[];
+  }>(() => {
+    if (!clusterOverviewEnabled) {
+      return {
+        nodes: data.nodes,
+        links: data.links,
+      };
+    }
+    if (activeFocusedClusterId !== null) {
+      const focusedNodes = clusterNodeMap.get(activeFocusedClusterId) || [];
+      const focusedNodeIdSet = new Set(focusedNodes.map((node) => node.id));
+      const focusedLinks: DisplayLink[] = [];
+
+      for (const link of data.links) {
+        const sourceId = getEndpointId(link.source);
+        const targetId = getEndpointId(link.target);
+        if (!sourceId || !targetId) continue;
+        if (!focusedNodeIdSet.has(sourceId) || !focusedNodeIdSet.has(targetId)) {
+          continue;
+        }
+        focusedLinks.push(link);
+      }
+
+      return {
+        nodes: focusedNodes,
+        links: focusedLinks,
+      };
+    }
+
+    const nodeById = new Map<string, DisplayNode>();
+    for (const node of data.nodes) {
+      nodeById.set(node.id, node);
+    }
+
+    const visibleNodes: DisplayNode[] = [];
+    const visibleNodeIdSet = new Set<string>();
+    const sortedClusters = Array.from(clusterNodeMap.entries()).sort((a, b) => a[0] - b[0]);
+
+    for (const [clusterId, clusterNodes] of sortedClusters) {
+      if (clusterNodes.length <= 1 || effectiveExpandedClusters.has(clusterId)) {
+        for (const node of clusterNodes) {
+          visibleNodes.push(node);
+          visibleNodeIdSet.add(node.id);
+        }
+      } else {
+        const memberCount = clusterNodes.length;
+        const semanticLabel = buildClusterSemanticLabel(clusterNodes);
+        const superNode: DisplayNode = {
+          id: clusterNodeId(clusterId),
+          name: `${semanticLabel} (${memberCount})`,
+          cluster: clusterId,
+          embedding: null,
+          isSuperNode: true,
+          memberCount,
+        };
+        visibleNodes.push(superNode);
+        visibleNodeIdSet.add(superNode.id);
+      }
+    }
+
+    const toVisibleNodeId = (nodeId: string): string | null => {
+      const node = nodeById.get(nodeId);
+      if (!node) return null;
+      const clusterNodes = clusterNodeMap.get(node.cluster);
+      const clusterSize = clusterNodes?.length ?? 0;
+      const shouldCollapseCluster =
+        clusterSize > 1 && !effectiveExpandedClusters.has(node.cluster);
+      return shouldCollapseCluster ? clusterNodeId(node.cluster) : nodeId;
+    };
+
+    const linkAggregate = new Map<
+      string,
+      { source: string; target: string; similaritySum: number; count: number }
+    >();
+
+    for (const link of data.links) {
+      const sourceId = getEndpointId(link.source);
+      const targetId = getEndpointId(link.target);
+      if (!sourceId || !targetId) continue;
+
+      const visibleSourceId = toVisibleNodeId(sourceId);
+      const visibleTargetId = toVisibleNodeId(targetId);
+      if (!visibleSourceId || !visibleTargetId) continue;
+      if (
+        visibleSourceId === visibleTargetId ||
+        !visibleNodeIdSet.has(visibleSourceId) ||
+        !visibleNodeIdSet.has(visibleTargetId)
+      ) {
+        continue;
+      }
+
+      const [a, b] =
+        visibleSourceId < visibleTargetId
+          ? [visibleSourceId, visibleTargetId]
+          : [visibleTargetId, visibleSourceId];
+      const key = `${a}::${b}`;
+      const current = linkAggregate.get(key);
+      const similarity =
+        typeof link.similarity === "number" && Number.isFinite(link.similarity)
+          ? link.similarity
+          : 0;
+      if (!current) {
+        linkAggregate.set(key, {
+          source: a,
+          target: b,
+          similaritySum: similarity,
+          count: 1,
+        });
+      } else {
+        current.similaritySum += similarity;
+        current.count += 1;
+      }
+    }
+
+    const visibleLinks: DisplayLink[] = Array.from(linkAggregate.values()).map((item) => ({
+      source: item.source,
+      target: item.target,
+      similarity: item.count > 0 ? item.similaritySum / item.count : 0,
+      isAggregate:
+        item.count > 1 || isClusterNodeId(item.source) || isClusterNodeId(item.target),
+      aggregateCount: item.count,
+    }));
+
+    return {
+      nodes: visibleNodes,
+      links: visibleLinks,
+    };
+  }, [
+    activeFocusedClusterId,
+    clusterNodeMap,
+    clusterOverviewEnabled,
+    data.links,
+    data.nodes,
+    effectiveExpandedClusters,
+  ]);
+
   const clusterOffsets = useMemo(
     () =>
       clusterOffsetState.signature === clusterSignature
@@ -321,14 +624,14 @@ export default function KnowledgeGraph({
     [clusterOffsetState, clusterSignature]
   );
   const nodeAnchorLayout = useMemo(() => {
-    const classicLayout = buildNodeAnchors(data);
+    const classicLayout = buildNodeAnchors(displayData);
     const umapLayout =
-      layoutMode === "umap" ? buildUmapAnchors(data, clusterSignature) : null;
+      layoutMode === "umap" ? buildUmapAnchors(displayData, clusterSignature) : null;
     const hasOffsets = Object.keys(clusterOffsets).length > 0;
     const anchors = new Map<string, { x: number; y: number }>();
     const strengths = new Map<string, number>();
 
-    for (const node of data.nodes) {
+    for (const node of displayData.nodes) {
       const base =
         umapLayout?.anchors.get(node.id) ||
         classicLayout.anchors.get(node.id) || { x: 0, y: 0 };
@@ -346,18 +649,22 @@ export default function KnowledgeGraph({
     }
 
     return { anchors, strengths };
-  }, [data, clusterOffsets, layoutMode, clusterSignature]);
+  }, [displayData, clusterOffsets, layoutMode, clusterSignature]);
   const safeLinkForceScale = Math.max(0.1, Math.min(4, linkForceScale));
   const alphaDecay = fastSettle ? 0.035 : 0.01;
   const velocityDecay = fastSettle ? 0.5 : 0.3;
   const cooldownTicks = fastSettle ? 120 : undefined;
   const nodeClusterMap = useMemo(() => {
     const map = new Map<string, number>();
-    for (const node of data.nodes) {
+    for (const node of displayData.nodes) {
       map.set(node.id, node.cluster);
     }
     return map;
-  }, [data.nodes]);
+  }, [displayData.nodes]);
+  const allClusterIds = useMemo(
+    () => new Set<number>(Array.from(nodeClusterMap.values())),
+    [nodeClusterMap]
+  );
 
   // Apply forces — retry until the ref is populated (dynamic import delay)
   useEffect(() => {
@@ -405,7 +712,7 @@ export default function KnowledgeGraph({
     }
 
     fg.d3ReheatSimulation();
-  }, [data, forcesApplied, nodeAnchorLayout, safeLinkForceScale]);
+  }, [displayData, forcesApplied, nodeAnchorLayout, safeLinkForceScale]);
 
   useEffect(() => {
     function handleResize() {
@@ -432,19 +739,19 @@ export default function KnowledgeGraph({
   // Build a quick lookup: nodeId -> cluster color
   const nodeColorMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const node of data.nodes) {
+    for (const node of displayData.nodes) {
       map.set(node.id, getClusterColor(node.cluster));
     }
     return map;
-  }, [data.nodes]);
+  }, [displayData.nodes]);
 
   const nodeNameMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const node of data.nodes) {
+    for (const node of displayData.nodes) {
       map.set(node.id, node.name);
     }
     return map;
-  }, [data.nodes]);
+  }, [displayData.nodes]);
 
   // When a node is selected, find all nodes connected to it in the current graph.
   // Everything outside this component gets dimmed and desaturated.
@@ -452,10 +759,10 @@ export default function KnowledgeGraph({
     if (!selectedNodeId) return null;
 
     const adjacency = new Map<string, Set<string>>();
-    for (const node of data.nodes) {
+    for (const node of displayData.nodes) {
       adjacency.set(node.id, new Set());
     }
-    for (const link of data.links) {
+    for (const link of displayData.links) {
       // react-force-graph mutates links and may replace endpoint ids with node objects
       const sourceId = getEndpointId(link.source);
       const targetId = getEndpointId(link.target);
@@ -485,13 +792,25 @@ export default function KnowledgeGraph({
     }
 
     return visited;
-  }, [data.links, data.nodes, selectedNodeId]);
+  }, [displayData.links, displayData.nodes, selectedNodeId]);
 
-  const hasFocus = Boolean(selectedNodeId && focusedComponent);
+  const selectedNodeVisible = useMemo(
+    () =>
+      Boolean(
+        selectedNodeId && displayData.nodes.some((node) => node.id === selectedNodeId)
+      ),
+    [displayData.nodes, selectedNodeId]
+  );
+  const hasFocus = Boolean(selectedNodeVisible && focusedComponent);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const nodeCanvasObject = useCallback((node: any, ctx: CanvasRenderingContext2D) => {
     const label = node.name || "";
+    const isSuperNode = node?.isSuperNode === true || isClusterNodeId(String(node?.id || ""));
+    const superNodeSize =
+      typeof node?.memberCount === "number"
+        ? Math.max(10, Math.min(26, 10 + Math.sqrt(node.memberCount) * 2.6))
+        : 14;
     const isSelected = node.id === selectedNodeId;
     const isConnectSource = connectingFromName === node.name;
     const inConnectMode = !!connectingFromName;
@@ -500,7 +819,7 @@ export default function KnowledgeGraph({
     const x = node.x || 0;
     const y = node.y || 0;
 
-    let radius = 5;
+    let radius = isSuperNode ? superNodeSize : 5;
     let nodeColor = color;
     let glowColor = color;
     let nodeAlpha = 1;
@@ -508,7 +827,7 @@ export default function KnowledgeGraph({
     let labelAlpha = 1;
 
     if (!inFocusedComponent) {
-      radius = 4;
+      radius = isSuperNode ? Math.max(8, superNodeSize - 2) : 4;
       nodeColor = "#9ca3af";
       glowColor = "#9ca3af";
       nodeAlpha = 0.3;
@@ -522,12 +841,14 @@ export default function KnowledgeGraph({
       nodeColor = "#a855f7";
       glowColor = "#a855f7";
       labelColor = "#c084fc";
-    } else if (inFocusedComponent && isSelected) {
+    } else if (inFocusedComponent && isSelected && !isSuperNode) {
       radius = 8;
       labelColor = "#ffffff";
-    } else if (inFocusedComponent && inConnectMode) {
+    } else if (inFocusedComponent && inConnectMode && !isSuperNode) {
       // Other nodes in connect mode — slightly brighter to invite clicking
       radius = 6;
+    } else if (inFocusedComponent && isSuperNode) {
+      labelColor = "#ffffff";
     }
 
     // Glow effect
@@ -542,14 +863,18 @@ export default function KnowledgeGraph({
     ctx.fillStyle = nodeColor;
     ctx.fill();
 
-    if (inFocusedComponent && isConnectSource) {
+    if (inFocusedComponent && isConnectSource && !isSuperNode) {
       // Pulsing ring for connect source
       ctx.strokeStyle = "#c084fc";
       ctx.lineWidth = 2;
       ctx.stroke();
-    } else if (inFocusedComponent && isSelected) {
+    } else if (inFocusedComponent && isSelected && !isSuperNode) {
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 2;
+      ctx.stroke();
+    } else if (inFocusedComponent && isSuperNode) {
+      ctx.strokeStyle = "rgba(255,255,255,0.65)";
+      ctx.lineWidth = 1.5;
       ctx.stroke();
     }
 
@@ -557,14 +882,18 @@ export default function KnowledgeGraph({
 
     // Draw label with subtle shadow for readability
     ctx.save();
-    ctx.font = isConnectSource ? "bold 10px Inter, sans-serif" : "10px Inter, sans-serif";
+    ctx.font = isSuperNode
+      ? "bold 11px Inter, sans-serif"
+      : isConnectSource
+        ? "bold 10px Inter, sans-serif"
+        : "10px Inter, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.shadowColor = "rgba(0,0,0,0.8)";
     ctx.shadowBlur = 4;
     ctx.globalAlpha = labelAlpha;
     ctx.fillStyle = labelColor;
-    ctx.fillText(label, x, y + 14);
+    ctx.fillText(label, x, y + (isSuperNode ? radius + 12 : 14));
     ctx.restore();
   }, [selectedNodeId, connectingFromName, hasFocus, focusedComponent, nodeColorMap]);
 
@@ -598,6 +927,10 @@ export default function KnowledgeGraph({
     const sourceColor = nodeColorMap.get(sourceId) || "#3b82f6";
     const targetColor = nodeColorMap.get(targetId) || "#3b82f6";
     const similarity = link.similarity || 0.3;
+    const aggregateCount =
+      typeof link.aggregateCount === "number" && Number.isFinite(link.aggregateCount)
+        ? Math.max(1, link.aggregateCount)
+        : 1;
     const alpha = isSelectedLink
       ? 0.95
       : inFocusedComponent
@@ -621,7 +954,7 @@ export default function KnowledgeGraph({
     ctx.lineWidth = isSelectedLink
       ? 4
       : inFocusedComponent
-        ? 1 + similarity * 2
+        ? 1 + similarity * 2 + Math.min(1.6, Math.log2(aggregateCount) * 0.35)
         : 1;
     if (isSelectedLink) {
       ctx.shadowColor = "#ffffff";
@@ -636,10 +969,36 @@ export default function KnowledgeGraph({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeClick = useCallback((node: any) => {
+    const nodeId = typeof node?.id === "string" ? node.id : "";
+    const clusterId =
+      typeof node?.cluster === "number" && Number.isFinite(node.cluster)
+        ? node.cluster
+        : null;
+    const isSuperNode = node?.isSuperNode === true || isClusterNodeId(nodeId);
+    if (clusterOverviewEnabled && isSuperNode && clusterId !== null) {
+      const now = Date.now();
+      const last = lastClusterClickRef.current;
+      const isDoubleClick =
+        last !== null &&
+        last.nodeId === nodeId &&
+        now - last.at <= CLUSTER_DOUBLE_CLICK_WINDOW_MS;
+
+      if (isDoubleClick) {
+        setFocusedClusterId(clusterId);
+        setExpandedClusters(new Set([clusterId]));
+        lastClusterClickRef.current = null;
+      } else {
+        lastClusterClickRef.current = { nodeId, at: now };
+      }
+      return;
+    }
+
+    lastClusterClickRef.current = null;
+
     if (onNodeClick && node.id && node.name) {
       onNodeClick(node.id, node.name);
     }
-  }, [onNodeClick]);
+  }, [clusterOverviewEnabled, onNodeClick]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeDragEnd = useCallback((node: any) => {
@@ -683,9 +1042,11 @@ export default function KnowledgeGraph({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleLinkClick = useCallback((link: any) => {
     if (!onLinkClick) return;
+    if (link?.isAggregate) return;
     const sourceId = getEndpointId(link?.source);
     const targetId = getEndpointId(link?.target);
     if (!sourceId || !targetId) return;
+    if (isClusterNodeId(sourceId) || isClusterNodeId(targetId)) return;
 
     const sourceName =
       getEndpointName(link?.source) || nodeNameMap.get(sourceId) || sourceId;
@@ -709,7 +1070,7 @@ export default function KnowledgeGraph({
     onBackgroundClick?.();
   }, [onBackgroundClick]);
 
-  if (data.nodes.length === 0) {
+  if (displayData.nodes.length === 0) {
     return (
       <div className="flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50" style={{ height: "500px" }}>
         <p className="text-gray-500">
@@ -722,12 +1083,66 @@ export default function KnowledgeGraph({
   return (
     <div
       ref={containerRef}
-      className="border border-gray-800 rounded-lg overflow-hidden"
+      className="relative border border-gray-800 rounded-lg overflow-hidden"
       style={{ background: "radial-gradient(ellipse at center, #0f172a 0%, #030712 100%)" }}
     >
+      <div className="absolute right-3 top-3 z-10 rounded-md border border-white/20 bg-gray-950/85 px-2.5 py-2 text-[11px] text-gray-200 backdrop-blur">
+        <div className="mb-1.5 text-gray-400">
+          Cluster overview: {clusterOverviewEnabled ? "on" : "off"}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (clusterOverviewEnabled) {
+                setFocusedClusterId(null);
+              }
+              setClusterOverviewEnabled((prev) => !prev);
+            }}
+            className={`rounded-md border px-2 py-1 ${
+              clusterOverviewEnabled
+                ? "border-cyan-600/60 text-cyan-200 hover:text-cyan-100"
+                : "border-gray-700 text-gray-300 hover:text-white"
+            }`}
+          >
+            {clusterOverviewEnabled ? "Turn off" : "Turn on"}
+          </button>
+          {clusterOverviewEnabled && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setFocusedClusterId(null);
+                  setExpandedClusters(new Set(allClusterIds));
+                }}
+                className="rounded-md border border-cyan-600/60 px-2 py-1 text-cyan-200 hover:text-cyan-100"
+              >
+                Expand all
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFocusedClusterId(null);
+                  setExpandedClusters(new Set());
+                }}
+                className="rounded-md border border-gray-700 px-2 py-1 text-gray-300 hover:text-white"
+              >
+                Collapse all
+              </button>
+            </>
+          )}
+        </div>
+        {clusterOverviewEnabled && (
+          <div className="mt-1.5 text-gray-500">
+            {activeFocusedClusterId !== null
+              ? "Focused cluster view active. Use Expand all or Collapse all to return."
+              : "Double-click a collapsed cluster to isolate it."}
+          </div>
+        )}
+      </div>
       <ForceGraph2D
         ref={graphRef}
-        graphData={data}
+        graphData={displayData}
         width={dimensions.width}
         height={dimensions.height}
         nodeCanvasObject={nodeCanvasObject}
