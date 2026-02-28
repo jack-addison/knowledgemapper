@@ -458,6 +458,11 @@ interface KnowledgeGraphProps {
   onLinkClick?: (link: GraphLinkSelection) => void;
   onBackgroundClick?: () => void;
   reservedWidth?: number;
+  clusterOverviewEnabled?: boolean;
+  onClusterOverviewEnabledChange?: (enabled: boolean) => void;
+  focusedClusterId?: number | null;
+  onFocusedClusterIdChange?: (clusterId: number | null) => void;
+  showClusterToggleButton?: boolean;
 }
 
 export default function KnowledgeGraph({
@@ -474,6 +479,11 @@ export default function KnowledgeGraph({
   onLinkClick,
   onBackgroundClick,
   reservedWidth,
+  clusterOverviewEnabled: clusterOverviewEnabledProp,
+  onClusterOverviewEnabledChange,
+  focusedClusterId: focusedClusterIdProp,
+  onFocusedClusterIdChange,
+  showClusterToggleButton = true,
 }: KnowledgeGraphProps) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -488,9 +498,41 @@ export default function KnowledgeGraph({
     offsets: {},
   });
   const [forcesApplied, setForcesApplied] = useState(0);
-  const [clusterOverviewEnabled, setClusterOverviewEnabled] = useState(false);
+  const [internalClusterOverviewEnabled, setInternalClusterOverviewEnabled] =
+    useState(false);
   const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
-  const [focusedClusterId, setFocusedClusterId] = useState<number | null>(null);
+  const [internalFocusedClusterId, setInternalFocusedClusterId] = useState<
+    number | null
+  >(null);
+  const clusterOverviewEnabled =
+    clusterOverviewEnabledProp ?? internalClusterOverviewEnabled;
+  const focusedClusterId =
+    focusedClusterIdProp !== undefined
+      ? focusedClusterIdProp
+      : internalFocusedClusterId;
+  const updateClusterOverviewEnabled = useCallback(
+    (next: boolean) => {
+      if (clusterOverviewEnabledProp === undefined) {
+        setInternalClusterOverviewEnabled(next);
+      }
+      onClusterOverviewEnabledChange?.(next);
+    },
+    [clusterOverviewEnabledProp, onClusterOverviewEnabledChange]
+  );
+  const updateFocusedClusterId = useCallback(
+    (next: number | null) => {
+      if (focusedClusterIdProp === undefined) {
+        setInternalFocusedClusterId(next);
+      }
+      onFocusedClusterIdChange?.(next);
+    },
+    [focusedClusterIdProp, onFocusedClusterIdChange]
+  );
+  const handleToggleClusterOverview = useCallback(() => {
+    updateFocusedClusterId(null);
+    setExpandedClusters(new Set());
+    updateClusterOverviewEnabled(!clusterOverviewEnabled);
+  }, [clusterOverviewEnabled, updateClusterOverviewEnabled, updateFocusedClusterId]);
   const clusterSignature = useMemo(
     () =>
       `${layoutMode}|` +
@@ -896,18 +938,18 @@ export default function KnowledgeGraph({
   useEffect(() => {
     function handleResize() {
       const sidebar = fullscreen ? 0 : reservedWidth ?? 0;
+      const fallbackWidth = Math.min(window.innerWidth - 32, 1800);
+      const fallbackHeight = fullscreen
+        ? window.innerHeight - 24
+        : Math.max(window.innerHeight - 200, 560);
       const containerWidth =
         containerRef.current?.clientWidth ??
-        Math.min(window.innerWidth - 32, 1800);
-      const containerHeight = fullscreen
-        ? window.innerHeight - 24
-        : window.innerHeight - 200;
+        fallbackWidth;
+      const containerHeight = containerRef.current?.clientHeight ?? fallbackHeight;
 
       setDimensions({
         width: Math.max(containerWidth - sidebar, 320),
-        height: fullscreen
-          ? Math.max(containerHeight, 320)
-          : Math.max(containerHeight, 560),
+        height: Math.max(containerHeight, 320),
       });
     }
     handleResize();
@@ -1263,7 +1305,7 @@ export default function KnowledgeGraph({
         now - last.at <= CLUSTER_DOUBLE_CLICK_WINDOW_MS;
 
       if (isDoubleClick) {
-        setFocusedClusterId(clusterId);
+        updateFocusedClusterId(clusterId);
         setExpandedClusters(new Set([clusterId]));
         lastClusterClickRef.current = null;
       } else {
@@ -1277,7 +1319,7 @@ export default function KnowledgeGraph({
     if (onNodeClick && node.id && node.name) {
       onNodeClick(node.id, node.name);
     }
-  }, [clusterOverviewEnabled, onNodeClick]);
+  }, [clusterOverviewEnabled, onNodeClick, updateFocusedClusterId]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeDragEnd = useCallback((node: any) => {
@@ -1359,8 +1401,7 @@ export default function KnowledgeGraph({
     return (
       <div
         ref={containerRef}
-        className="flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50"
-        style={{ height: `${dimensions.height}px` }}
+        className="h-full w-full flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50"
       >
         <p className="text-gray-500">
           Add some interests to see your knowledge graph
@@ -1372,24 +1413,22 @@ export default function KnowledgeGraph({
   return (
     <div
       ref={containerRef}
-      className="relative border border-gray-800 rounded-lg overflow-hidden"
+      className="relative h-full w-full border border-gray-800 rounded-lg overflow-hidden"
       style={{ background: "radial-gradient(ellipse at center, #0f172a 0%, #030712 100%)" }}
     >
-      <button
-        type="button"
-        onClick={() => {
-          setFocusedClusterId(null);
-          setExpandedClusters(new Set());
-          setClusterOverviewEnabled((prev) => !prev);
-        }}
-        className={`absolute right-3 top-3 z-10 rounded-full border px-3 py-1.5 text-xs font-medium backdrop-blur transition-colors ${
-          clusterOverviewEnabled
-            ? "border-emerald-500/70 bg-emerald-500/20 text-emerald-100"
-            : "border-gray-700 bg-gray-950/85 text-gray-300 hover:border-gray-500 hover:text-white"
-        }`}
-      >
-        Cluster
-      </button>
+      {showClusterToggleButton && (
+        <button
+          type="button"
+          onClick={handleToggleClusterOverview}
+          className={`absolute right-3 top-3 z-10 rounded-full border px-3 py-1.5 text-xs font-medium backdrop-blur transition-colors ${
+            clusterOverviewEnabled
+              ? "border-emerald-500/70 bg-emerald-500/20 text-emerald-100"
+              : "border-gray-700 bg-gray-950/85 text-gray-300 hover:border-gray-500 hover:text-white"
+          }`}
+        >
+          Cluster
+        </button>
+      )}
       <ForceGraph2D
         ref={graphRef}
         graphData={displayData}

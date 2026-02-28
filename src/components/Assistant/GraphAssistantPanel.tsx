@@ -113,8 +113,7 @@ export default function GraphAssistantPanel({
 }: GraphAssistantPanelProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [scope, setScope] = useState<GraphAssistantScope>("map");
-  const [assistantMode, setAssistantMode] =
-    useState<GraphAssistantMode>("grounded");
+  const assistantMode: GraphAssistantMode = "general";
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -150,7 +149,6 @@ export default function GraphAssistantPanel({
     setError("");
     setLoading(false);
     setScope("map");
-    setAssistantMode("grounded");
     setAllowExternalPapers(true);
     setIsOpen(false);
     setMessageStatuses({});
@@ -725,7 +723,7 @@ export default function GraphAssistantPanel({
 
   const handleAsk = useCallback(async (
     directQuestion?: string,
-    options?: { mode?: GraphAssistantMode; scope?: GraphAssistantScope }
+    options?: { scope?: GraphAssistantScope }
   ) => {
     if (loading) return;
 
@@ -733,7 +731,7 @@ export default function GraphAssistantPanel({
       typeof directQuestion === "string"
         ? directQuestion.trim()
         : question.trim();
-    const effectiveMode = options?.mode ?? assistantMode;
+    const effectiveMode = assistantMode;
     const effectiveScope = options?.scope ?? scope;
     if (!trimmed) {
       setError("Enter a question first.");
@@ -871,7 +869,6 @@ export default function GraphAssistantPanel({
 
     handledAutoAskIdRef.current = autoAskRequest.id;
 
-    const requestedMode = autoAskRequest.mode ?? "general";
     const requestedScope = autoAskRequest.scope ?? "node";
     const resolvedScope: GraphAssistantScope =
       requestedScope === "node"
@@ -884,12 +881,11 @@ export default function GraphAssistantPanel({
             : "edge"
           : "map";
 
-    setAssistantMode(requestedMode);
     setScope(resolvedScope);
     setIsOpen(true);
     setError("");
     setQuestion(prompt);
-    void handleAsk(prompt, { mode: requestedMode, scope: resolvedScope });
+    void handleAsk(prompt, { scope: resolvedScope });
   }, [autoAskRequest, handleAsk, scopeDisabled.edge, scopeDisabled.map, scopeDisabled.node]);
 
   if (!hasMap) return null;
@@ -938,22 +934,9 @@ export default function GraphAssistantPanel({
           </div>
 
           <div className="border-b border-gray-800 px-3 py-2">
-            <div className="mb-2 flex items-center gap-2">
-              {(["grounded", "general"] as GraphAssistantMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setAssistantMode(mode)}
-                  className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
-                    assistantMode === mode
-                      ? "border-cyan-500/70 bg-cyan-500/15 text-cyan-100"
-                      : "border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white"
-                  }`}
-                >
-                  {mode === "grounded" ? "Grounded" : "General"}
-                </button>
-              ))}
-            </div>
+            <p className="mb-2 text-[11px] text-gray-400">
+              Chat uses the selected focus and current map context.
+            </p>
             <div className="flex items-center gap-2">
               {(["map", "node", "edge"] as GraphAssistantScope[]).map(
                 (scopeOption) => (
@@ -978,25 +961,16 @@ export default function GraphAssistantPanel({
                 Assistant currently supports individual maps, not Combined.
               </p>
             )}
-            {assistantMode === "grounded" && (
-              <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
-                <input
-                  type="checkbox"
-                  checked={allowExternalPapers}
-                  onChange={(e) => setAllowExternalPapers(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-900 accent-cyan-500"
-                />
-                Explore external papers for this question
-              </label>
-            )}
-            {assistantMode === "general" && (
-              <p className="mt-2 text-[11px] text-gray-400">
-                General mode works like open chat, but still uses your selected
-                scope as focus context.
-              </p>
-            )}
-            {assistantMode === "general" && (
-              <div className="mt-2 space-y-2">
+            <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
+              <input
+                type="checkbox"
+                checked={allowExternalPapers}
+                onChange={(e) => setAllowExternalPapers(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-900 accent-cyan-500"
+              />
+              Explore external papers for this question
+            </label>
+            <div className="mt-2 space-y-2">
                 <div className="rounded-md border border-cyan-900/60 bg-cyan-950/15">
                   <button
                     type="button"
@@ -1254,7 +1228,6 @@ export default function GraphAssistantPanel({
                   <p className="text-[11px] text-red-300">{extractPaperError}</p>
                 )}
               </div>
-            )}
           </div>
 
           <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -1271,11 +1244,7 @@ export default function GraphAssistantPanel({
                   <p className="text-[11px] uppercase tracking-wide text-gray-400">
                     {message.role === "user"
                       ? "You"
-                      : `Assistant · ${
-                          message.assistantMode === "general"
-                            ? "General"
-                            : `${scopeLabel(message.scope)} scope`
-                        }`}
+                      : `Assistant · ${scopeLabel(message.scope)} focus`}
                   </p>
                   <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">
                     {message.text}
@@ -1328,7 +1297,6 @@ export default function GraphAssistantPanel({
                   )}
 
                   {message.role === "assistant" &&
-                    message.assistantMode === "grounded" &&
                     message.citations.length > 0 && (
                     <div className="mt-2 space-y-1">
                       <p className="text-[11px] text-gray-400">Citations</p>
@@ -1381,7 +1349,6 @@ export default function GraphAssistantPanel({
                     </p>
                   )}
                   {message.role === "assistant" &&
-                    message.assistantMode === "grounded" &&
                     message.externalPaperCount > 0 && (
                     <p className="mt-1 text-[11px] text-cyan-300">
                       Included {message.externalPaperCount} external paper result
@@ -1403,8 +1370,22 @@ export default function GraphAssistantPanel({
               ))}
 
               {loading && (
-                <div className="max-w-[92%] rounded-md border border-cyan-700/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100">
-                  Thinking...
+                <div className="max-w-[92%]">
+                  <div className="inline-flex items-center gap-1 rounded-2xl border border-cyan-700/40 bg-cyan-500/10 px-3 py-2">
+                    <span
+                      className="assistant-typing-dot"
+                      style={{ animationDelay: "0ms" }}
+                    />
+                    <span
+                      className="assistant-typing-dot"
+                      style={{ animationDelay: "150ms" }}
+                    />
+                    <span
+                      className="assistant-typing-dot"
+                      style={{ animationDelay: "300ms" }}
+                    />
+                    <span className="sr-only">Assistant is typing</span>
+                  </div>
                 </div>
               )}
 
@@ -1439,31 +1420,27 @@ export default function GraphAssistantPanel({
                     placeholder="Ask about this map, node, or edge..."
                     className="flex-1 resize-none rounded-md border border-gray-700 bg-gray-900 px-2.5 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
                   />
-                  {assistantMode === "general" && (
-                    <button
-                      type="button"
-                      onClick={handleBuildMapFromPrompt}
-                      disabled={buildMapLoading || extendMapLoading || loading}
-                      className="self-stretch rounded-md border border-emerald-500/70 bg-emerald-500/15 px-3 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-60"
-                    >
-                      {buildMapLoading ? "Building..." : "Build"}
-                    </button>
-                  )}
-                  {assistantMode === "general" && (
-                    <button
-                      type="button"
-                      onClick={handleExtendMapFromPrompt}
-                      disabled={
-                        extendMapLoading ||
-                        buildMapLoading ||
-                        loading ||
-                        isCombinedMap
-                      }
-                      className="self-stretch rounded-md border border-indigo-500/70 bg-indigo-500/15 px-3 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/25 disabled:opacity-60"
-                    >
-                      {extendMapLoading ? "Extending..." : "Extend"}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleBuildMapFromPrompt}
+                    disabled={buildMapLoading || extendMapLoading || loading}
+                    className="self-stretch rounded-md border border-emerald-500/70 bg-emerald-500/15 px-3 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-60"
+                  >
+                    {buildMapLoading ? "Building..." : "Build"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExtendMapFromPrompt}
+                    disabled={
+                      extendMapLoading ||
+                      buildMapLoading ||
+                      loading ||
+                      isCombinedMap
+                    }
+                    className="self-stretch rounded-md border border-indigo-500/70 bg-indigo-500/15 px-3 text-xs font-semibold text-indigo-100 hover:bg-indigo-500/25 disabled:opacity-60"
+                  >
+                    {extendMapLoading ? "Extending..." : "Extend"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -1480,11 +1457,9 @@ export default function GraphAssistantPanel({
                     <p className="text-xs text-red-300">{error}</p>
                   ) : (
                     <p className="text-[11px] text-gray-500">
-                      {assistantMode === "general"
-                        ? "General chat mode."
-                        : `Grounded answers from map context${
-                            allowExternalPapers ? " + external paper metadata." : "."
-                          }`}
+                      {`Map-aware chat with ${scopeLabel(scope).toLowerCase()} focus${
+                        allowExternalPapers ? " + external paper metadata." : "."
+                      }`}
                     </p>
                   )}
                 </div>

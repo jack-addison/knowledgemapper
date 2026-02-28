@@ -493,6 +493,8 @@ export async function POST(request: NextRequest) {
   if (parsed.assistantMode === "general") {
     try {
       let focusContext = `Scope focus: ${parsed.scope}.`;
+      const scopeContextTerms: string[] = [];
+      let externalPaperDocs: AssistantContextDoc[] = [];
 
       if (parsed.scope === "map") {
         const [{ data: mapRow }, countResult, { data: previewRows }] =
@@ -533,6 +535,7 @@ export async function POST(request: NextRequest) {
           `Map name: ${mapName}\n` +
           `Approx topic count: ${topicCount}\n` +
           `Topic preview: ${preview.length > 0 ? preview.join(", ") : "none yet"}`;
+        scopeContextTerms.push(mapName, ...preview);
       } else if (parsed.scope === "node" && parsed.nodeId) {
         const { data: nodeRow } = await supabase
           .from("interests")
@@ -562,6 +565,7 @@ export async function POST(request: NextRequest) {
           `Scope focus: node.\n` +
           `Node: ${nodeName}\n` +
           `Saved notes: ${nodeNotes}`;
+        scopeContextTerms.push(nodeName);
       } else if (
         parsed.scope === "edge" &&
         parsed.interestAId &&
@@ -620,6 +624,7 @@ export async function POST(request: NextRequest) {
           `Scope focus: edge.\n` +
           `Edge: ${source} ↔ ${target}\n` +
           `Saved edge notes: ${edgeNotes}`;
+        scopeContextTerms.push(source, target);
       }
 
       const {
@@ -656,6 +661,25 @@ export async function POST(request: NextRequest) {
         focusContext += `\n\nSaved paper contexts:\n${paperContextBlock}`;
       }
 
+      if (parsed.allowExternalPapers) {
+        const externalQuery = `${parsed.question} ${scopeContextTerms.join(" ")}`.trim();
+        if (externalQuery.length > 0) {
+          try {
+            externalPaperDocs = await fetchExternalPaperDocs(externalQuery);
+          } catch (err) {
+            console.warn("General assistant external paper lookup failed:", err);
+          }
+        }
+      }
+
+      if (externalPaperDocs.length > 0) {
+        const externalPaperBlock = externalPaperDocs
+          .slice(0, MAX_EXTERNAL_PAPERS)
+          .map((doc, index) => `E${index + 1}: ${clampText(doc.text, 500)}`)
+          .join("\n\n");
+        focusContext += `\n\nExternal paper metadata:\n${externalPaperBlock}`;
+      }
+
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.5,
@@ -664,7 +688,7 @@ export async function POST(request: NextRequest) {
           {
             role: "system",
             content:
-              "You are KnowledgeMapper's AI assistant. Answer general questions clearly and concisely, like a normal chat assistant. You may answer beyond map data. Use the provided focus context, including saved paper excerpts, to keep the response oriented to the selected map/node/edge. If uncertain, say so. Return strict JSON with keys: answer (string), suggestedFollowups (array of short strings).",
+              "You are KnowledgeMapper's AI assistant. Answer general questions clearly and concisely, like a normal chat assistant. You may answer beyond map data. Use the provided focus context, including saved and external paper excerpts when present, to keep the response oriented to the selected map/node/edge. If uncertain, say so. Return strict JSON with keys: answer (string), suggestedFollowups (array of short strings).",
           },
           {
             role: "user",
@@ -689,11 +713,13 @@ export async function POST(request: NextRequest) {
         answer,
         scope: parsed.scope,
         assistantMode: "general",
-        citations: [],
+        citations: uniqueCitations(
+          externalPaperDocs.slice(0, 4).map((doc) => doc.citation)
+        ),
         insufficientEvidence: false,
         suggestedFollowups,
-        contextCount: 0,
-        externalPaperCount: 0,
+        contextCount: externalPaperDocs.length,
+        externalPaperCount: externalPaperDocs.length,
         generatedAt: new Date().toISOString(),
       };
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import Navbar from "@/components/Layout/Navbar";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
 import TopicDetail from "@/components/TopicDetail/TopicDetail";
 import NotesSidebar from "@/components/NotesSidebar/NotesSidebar";
@@ -522,9 +523,12 @@ function buildEdgeExportBlock(
 }
 
 export default function DashboardPage() {
+  const pathname = usePathname();
+  const router = useRouter();
   const [maps, setMaps] = useState<KnowledgeMap[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [newMapName, setNewMapName] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [mapCreateOpen, setMapCreateOpen] = useState(false);
   const [creatingMap, setCreatingMap] = useState(false);
   const [floatingAddOpen, setFloatingAddOpen] = useState(false);
@@ -641,6 +645,10 @@ export default function DashboardPage() {
 
   const [threshold, setThreshold] = useState(DEFAULT_SIMILARITY_THRESHOLD);
   const [clusterThreshold, setClusterThreshold] = useState(DEFAULT_CLUSTER_THRESHOLD);
+  const [clusterOverviewEnabled, setClusterOverviewEnabled] = useState(false);
+  const [clusterFocusedClusterId, setClusterFocusedClusterId] = useState<
+    number | null
+  >(null);
   const [linkForceScale, setLinkForceScale] = useState(DEFAULT_LINK_FORCE_SCALE);
   const [edgeRenderTopK, setEdgeRenderTopK] = useState(
     DEFAULT_EDGE_RENDER_TOP_K
@@ -648,7 +656,7 @@ export default function DashboardPage() {
   const [layoutMode, setLayoutMode] = useState<GraphLayoutMode>(
     DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode
   );
-  const [fastSettleMode, setFastSettleMode] = useState(true);
+  const fastSettleMode = true;
   const [tdaHealth, setTdaHealth] = useState<TdaMapHealth | null>(null);
   const [tdaLoading, setTdaLoading] = useState(false);
   const [tdaError, setTdaError] = useState("");
@@ -929,6 +937,10 @@ export default function DashboardPage() {
     setLinkForceScale(settings.linkForceScale);
     setEdgeRenderTopK(settings.edgeRenderTopK);
     setLayoutMode(settings.layoutMode);
+  }, [selectedMapId]);
+
+  useEffect(() => {
+    setClusterFocusedClusterId(null);
   }, [selectedMapId]);
 
   useEffect(() => {
@@ -1402,6 +1414,12 @@ export default function DashboardPage() {
     if (selectedMapId) {
       saveMapLayoutSettings(selectedMapId, { layoutMode: mode });
     }
+  }
+
+  async function handleLogout() {
+    const supabase = createSupabaseBrowserClient();
+    await supabase.auth.signOut();
+    router.push("/");
   }
 
   async function handleCreateMap() {
@@ -2816,11 +2834,17 @@ export default function DashboardPage() {
     selectedMapCanManage,
   ]);
 
+  const navLinks = [
+    { href: "/dashboard", label: "Map" },
+    { href: "/discover", label: "Discover" },
+    { href: "/profile", label: "Profile" },
+    { href: "/about", label: "About" },
+  ];
+
   if (mapsLoading || initialLoading) {
     return (
-      <div className="min-h-screen">
-        <Navbar />
-        <div className="flex items-center justify-center h-96">
+      <div className="h-screen w-screen bg-gray-950">
+        <div className="flex h-full items-center justify-center">
           <p className="text-gray-400">Loading your knowledge map...</p>
         </div>
       </div>
@@ -2828,13 +2852,107 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Navbar />
-      <div className="flex-1 px-4 py-3 space-y-3 max-w-[1800px] mx-auto w-full">
+    <div className="h-screen w-screen overflow-hidden bg-gray-950">
+      <div className="relative h-full w-full">
+        <div className="absolute right-3 top-3 z-10">
+          {!optionsOpen ? (
+            <button
+              type="button"
+              onClick={() => setOptionsOpen(true)}
+              className="h-10 rounded-full border border-gray-700 bg-gray-950/90 px-3 text-xs font-semibold text-gray-200 transition-colors hover:border-gray-500"
+              title="Map options"
+              aria-label="Open map options"
+            >
+              Options
+            </button>
+          ) : (
+            <div className="w-[min(88vw,460px)] max-h-[calc(100vh-0.75rem)] overflow-y-auto rounded-xl border border-gray-700 bg-gray-950/95 p-3 shadow-2xl backdrop-blur">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-white">KnowledgeMapper</h2>
+                  <p className="text-xs text-gray-400">
+                    {interests.length} interests, {graphData.links.length} connections
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (
+                        clusterOverviewEnabled &&
+                        clusterFocusedClusterId !== null
+                      ) {
+                        setClusterFocusedClusterId(null);
+                        return;
+                      }
+                      setClusterOverviewEnabled((prev) => {
+                        const next = !prev;
+                        if (!next) {
+                          setClusterFocusedClusterId(null);
+                        }
+                        return next;
+                      });
+                    }}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                      clusterOverviewEnabled
+                        ? "border-emerald-500/70 bg-emerald-500/20 text-emerald-100"
+                        : "border-gray-700 bg-gray-950/85 text-gray-300 hover:border-gray-500 hover:text-white"
+                    }`}
+                    title={
+                      clusterOverviewEnabled && clusterFocusedClusterId !== null
+                        ? "Back to all clusters"
+                        : "Toggle clustered view"
+                    }
+                    aria-label={
+                      clusterOverviewEnabled && clusterFocusedClusterId !== null
+                        ? "Back to all clusters"
+                        : "Toggle clustered view"
+                    }
+                  >
+                    {clusterOverviewEnabled && clusterFocusedClusterId !== null
+                      ? "Back"
+                      : "Cluster"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOptionsOpen(false)}
+                    className="h-8 w-8 rounded-full border border-gray-700 text-sm text-gray-300 hover:border-gray-500 hover:text-white"
+                    title="Close map options"
+                    aria-label="Close map options"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+              <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                {navLinks.map((link) => (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                      pathname === link.href
+                        ? "border-cyan-500/70 bg-cyan-500/15 text-cyan-100"
+                        : "border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white"
+                    }`}
+                  >
+                    {link.label}
+                  </Link>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => void handleLogout()}
+                  className="rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:border-gray-500 hover:text-white"
+                >
+                  Log out
+                </button>
+              </div>
+              <div className="mb-3 border-b border-gray-800/80" />
+
+              <div className="space-y-3">
         <div>
           <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
             <div>
-              <h2 className="text-xl font-bold">Your Knowledge Map</h2>
+              <h3 className="text-sm font-semibold text-gray-100">Map controls</h3>
               <span className="text-gray-500 text-xs">
                 {interests.length} interests, {graphData.links.length} connections
               </span>
@@ -2845,7 +2963,7 @@ export default function DashboardPage() {
               <select
                 value={selectedMapId ?? ""}
                 onChange={(e) => setSelectedMapId(e.target.value || null)}
-                className="px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-gray-200 focus:outline-none focus:border-blue-500"
+                className="w-44 sm:w-52 px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-gray-200 focus:outline-none focus:border-blue-500"
               >
                 {mapOptions.map((map) => (
                   <option key={map.id} value={map.id}>
@@ -2878,7 +2996,7 @@ export default function DashboardPage() {
                       }
                     }}
                     placeholder="New map name..."
-                    className="w-52 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
+                    className="w-40 sm:w-44 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
                     autoFocus
                     disabled={creatingMap}
                   />
@@ -3245,7 +3363,7 @@ export default function DashboardPage() {
 	          </div>
 
           {shareToast && (
-            <div className="fixed right-6 top-20 z-50 rounded-md border border-emerald-500/50 bg-gray-950/90 px-3 py-1.5 text-xs text-emerald-200 shadow-lg backdrop-blur">
+            <div className="fixed right-4 top-4 z-[60] rounded-md border border-emerald-500/50 bg-gray-950/90 px-3 py-1.5 text-xs text-emerald-200 shadow-lg backdrop-blur">
               {shareToast}
             </div>
           )}
@@ -3295,17 +3413,6 @@ export default function DashboardPage() {
           <span className="text-xs text-gray-500">
             Higher means only stronger topic similarities create links.
           </span>
-          <button
-            onClick={() => setFastSettleMode((prev) => !prev)}
-            className={`ml-auto px-2.5 py-1 rounded-md border text-xs transition-colors ${
-              fastSettleMode
-                ? "border-cyan-500/70 text-cyan-200 bg-cyan-500/10"
-                : "border-gray-700 text-gray-300 hover:border-gray-500"
-            }`}
-            title="Reduce post-drag drift by making the simulation settle faster."
-          >
-            Fast settle: {fastSettleMode ? "On" : "Off"}
-          </button>
         </div>
 
         <details className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2">
@@ -3519,10 +3626,14 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div
           ref={mapViewportRef}
-          className={`relative flex-1 min-h-0 ${
+          className={`relative h-full w-full ${
             isMapFullscreen ? "bg-gray-950 p-3" : ""
           }`}
         >
@@ -3581,6 +3692,11 @@ export default function DashboardPage() {
               layoutMode={layoutMode}
               fastSettle={fastSettleMode}
               fullscreen={isMapFullscreen}
+              clusterOverviewEnabled={clusterOverviewEnabled}
+              onClusterOverviewEnabledChange={setClusterOverviewEnabled}
+              focusedClusterId={clusterFocusedClusterId}
+              onFocusedClusterIdChange={setClusterFocusedClusterId}
+              showClusterToggleButton={false}
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
               onBackgroundClick={() => {
@@ -3591,7 +3707,7 @@ export default function DashboardPage() {
               reservedWidth={0}
             />
           ) : (
-            <div className="h-[560px] flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50">
+            <div className="h-full w-full flex items-center justify-center border border-gray-800 rounded-lg bg-gray-950/50">
               <p className="text-gray-500">Create a map to get started.</p>
             </div>
           )}
