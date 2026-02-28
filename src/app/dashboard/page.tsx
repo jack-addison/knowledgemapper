@@ -623,9 +623,12 @@ export default function DashboardPage() {
     id: string;
     name: string;
   } | null>(null);
+  const [nodeNotesExpanded, setNodeNotesExpanded] = useState(false);
+  const [edgeNotesExpanded, setEdgeNotesExpanded] = useState(false);
   const sharePanelRef = useRef<HTMLDivElement | null>(null);
   const shareToastTimerRef = useRef<number | null>(null);
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
+  const edgeNotesSectionRef = useRef<HTMLDivElement | null>(null);
   const topicCloseTimerRef = useRef<number | null>(null);
   const edgeCloseTimerRef = useRef<number | null>(null);
   const topicEnterRafRef = useRef<number | null>(null);
@@ -798,6 +801,11 @@ export default function DashboardPage() {
     if (!selectedMapId) return;
     localStorage.setItem("km-active-map-id", selectedMapId);
   }, [selectedMapId]);
+
+  useEffect(() => {
+    if (notesTopic) return;
+    setNodeNotesExpanded(false);
+  }, [notesTopic]);
 
   useEffect(() => {
     setFloatingAddOpen(false);
@@ -1246,11 +1254,13 @@ export default function DashboardPage() {
       setEdgePanelEntering(false);
       setSelectedLink(null);
       setEdgePanelExpanded(false);
+      setEdgeNotesExpanded(false);
     }
   }, [interests, selectedLink]);
 
   useEffect(() => {
     setEdgePanelExpanded(Boolean(selectedLink));
+    setEdgeNotesExpanded(false);
   }, [selectedLink]);
 
   useEffect(() => {
@@ -2153,6 +2163,7 @@ export default function DashboardPage() {
     setEdgePanelEntering(false);
     setSelectedLink(null);
     setEdgePanelExpanded(false);
+    setEdgeNotesExpanded(false);
   }
 
   function closeTopicPanelSmooth() {
@@ -2748,10 +2759,59 @@ export default function DashboardPage() {
   const edgeNoteTemplates = selectedLink
     ? buildEdgeNoteTemplates(selectedLink)
     : [];
+  const edgePanelFullWidth = edgeNotesExpanded;
+  const edgePanelSizeClass = edgePanelFullWidth
+    ? "w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
+    : edgePanelExpanded
+      ? "w-[44rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
+      : "w-72 max-h-[calc(100%-1.5rem)]";
+  const edgePanelFullscreenSizeClass = edgePanelFullWidth
+    ? "w-full h-[min(94vh,980px)]"
+    : "w-full max-w-6xl h-[min(92vh,920px)]";
   const edgeNotesWordCount = edgeNotes.trim()
     ? edgeNotes.trim().split(/\s+/).length
     : 0;
   const edgeNotesCharCount = edgeNotes.length;
+  const floatingAddDockStyle = isMapFullscreen
+    ? {
+        bottom: "max(1.5rem, env(safe-area-inset-bottom))",
+        left: "max(1.5rem, env(safe-area-inset-left))",
+      }
+    : {
+        bottom: "max(0.75rem, env(safe-area-inset-bottom))",
+        left: "max(0.75rem, env(safe-area-inset-left))",
+      };
+
+  const handleOpenEdgeNotes = useCallback(() => {
+    if (!selectedLink) return;
+    setAssistantPanelOpen(false);
+    setEdgePanelExpanded(true);
+    setEdgeNotesExpanded(true);
+    window.requestAnimationFrame(() => {
+      edgeNotesSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }, [selectedLink]);
+
+  function handleAskAssistantAboutEdge(prompt: string) {
+    if (!selectedLink) return;
+    if (isCombinedMapSelected) {
+      setError("Assistant currently supports individual maps, not Combined.");
+      return;
+    }
+    closeEdgePanelImmediate();
+    setAssistantAutoAskRequest({
+      id: `edge-research-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+      prompt,
+      mode: "general",
+      scope: "edge",
+    });
+    setAssistantPanelOpen(true);
+  }
 
   useEffect(() => {
     if (isMapFullscreen && showTopicDetail) {
@@ -2852,9 +2912,15 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-gray-950">
+    <div className="min-h-screen h-[100dvh] w-screen overflow-hidden bg-gray-950">
       <div className="relative h-full w-full">
-        <div className="absolute right-3 top-3 z-10">
+        <div
+          className="absolute right-3 top-3 z-10"
+          style={{
+            right: "max(0.75rem, env(safe-area-inset-right))",
+            top: "max(0.75rem, env(safe-area-inset-top))",
+          }}
+        >
           {!optionsOpen ? (
             <button
               type="button"
@@ -3642,6 +3708,14 @@ export default function DashboardPage() {
               type="button"
               onClick={handleToggleMapFullscreen}
               className="absolute top-3 left-3 z-40 h-9 w-9 rounded-md border border-gray-700 bg-gray-950/90 text-gray-200 hover:border-gray-500 hover:text-white transition-colors flex items-center justify-center"
+              style={{
+                top: isMapFullscreen
+                  ? "max(0.75rem, env(safe-area-inset-top))"
+                  : undefined,
+                left: isMapFullscreen
+                  ? "max(0.75rem, env(safe-area-inset-left))"
+                  : undefined,
+              }}
               title={isMapFullscreen ? "Minimise map view" : "Maximise map view"}
               aria-label={isMapFullscreen ? "Minimise map view" : "Maximise map view"}
             >
@@ -3717,6 +3791,7 @@ export default function DashboardPage() {
               className={`absolute z-40 ${
                 isMapFullscreen ? "bottom-6 left-6" : "bottom-3 left-3"
               }`}
+              style={floatingAddDockStyle}
             >
               {floatingAddOpen ? (
                 <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
@@ -3846,15 +3921,10 @@ export default function DashboardPage() {
                   }}
                   onStartConnect={handleStartConnect}
                   onOpenNotes={() => {
-                    if (isCombinedMapSelected || !selectedMapCanEdit) {
-                      setError(
-                        isCombinedMapSelected
-                          ? "Combined map is read-only. Edit notes in a specific map."
-                          : "You only have view access to this map."
-                      );
-                      return;
-                    }
-                    setNotesTopic(selectedTopic);
+                    if (!selectedTopic) return;
+                    setAssistantPanelOpen(false);
+                    setNotesTopic({ id: selectedTopic.id, name: selectedTopic.name });
+                    setNodeNotesExpanded(false);
                     closeTopicPanelImmediate();
                   }}
                   researchEvidence={selectedTopicEvidence}
@@ -3895,7 +3965,9 @@ export default function DashboardPage() {
               className={
                 isMapFullscreen
                   ? "absolute inset-0 z-30 flex items-center justify-center p-4 bg-black/45"
-                  : "absolute top-3 right-3 z-20 w-[36rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
+                  : nodeNotesExpanded
+                    ? "absolute inset-3 z-20"
+                    : "absolute top-3 right-3 z-20 w-[36rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
               }
               onClick={(event) => {
                 if (!isMapFullscreen) return;
@@ -3907,8 +3979,12 @@ export default function DashboardPage() {
               <div
                 className={
                   isMapFullscreen
-                    ? "w-full max-w-5xl h-[min(92vh,920px)]"
-                    : "h-full"
+                    ? nodeNotesExpanded
+                      ? "w-full h-[min(94vh,980px)]"
+                      : "w-full max-w-5xl h-[min(92vh,920px)]"
+                    : nodeNotesExpanded
+                      ? "h-full w-full"
+                      : "h-full"
                 }
               >
                 <NotesSidebar
@@ -3919,6 +3995,11 @@ export default function DashboardPage() {
                   }
                   onSave={(notes) => handleSaveNotes(notesTopic.id, notes)}
                   onClose={() => setNotesTopic(null)}
+                  isExpanded={nodeNotesExpanded}
+                  readOnly={isCombinedMapSelected || !selectedMapCanEdit}
+                  onToggleExpand={() =>
+                    setNodeNotesExpanded((prevExpanded) => !prevExpanded)
+                  }
                 />
               </div>
             </div>
@@ -3934,9 +4015,7 @@ export default function DashboardPage() {
                         : "bg-black/45 opacity-100"
                     }`
                   : `absolute top-3 right-3 z-20 overflow-y-auto transition-all duration-200 ease-out ${
-                      edgePanelExpanded
-                        ? "w-[48rem] max-w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)]"
-                        : "w-80 max-h-[calc(100%-1.5rem)]"
+                      edgePanelSizeClass
                     } ${
                       edgePanelClosing || edgePanelEntering
                         ? "opacity-0 translate-y-2 pointer-events-none"
@@ -3947,7 +4026,7 @@ export default function DashboardPage() {
               <aside
                 className={`border border-gray-700 rounded-lg bg-gray-900 p-4 space-y-4 ${
                   isMapFullscreen
-                    ? `w-full max-w-6xl h-[min(92vh,920px)] overflow-y-auto transition-all duration-200 ease-out ${
+                    ? `${edgePanelFullscreenSizeClass} overflow-y-auto transition-all duration-200 ease-out ${
                         edgePanelClosing || edgePanelEntering
                           ? "opacity-0 translate-y-2 scale-[0.985]"
                           : "opacity-100 translate-y-0 scale-100"
@@ -3961,7 +4040,7 @@ export default function DashboardPage() {
                       Connection details
                     </h3>
                     <p className="text-xs text-gray-400 mt-0.5">
-                      Why these topics are linked
+                      Link actions and evidence
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -4000,12 +4079,48 @@ export default function DashboardPage() {
                     <span className="text-gray-500 mx-2">↔</span>
                     {selectedLink.targetName}
                   </p>
+                  <p className="text-xs text-gray-300 mt-1">
+                    {explainLink(selectedLink)}
+                  </p>
                   <p className="text-xs text-gray-400 mt-1">
                     Similarity score:{" "}
                     <span className="text-gray-200 font-mono">
                       {selectedLink.similarity.toFixed(2)}
                     </span>
                   </p>
+                </div>
+
+                <div className="rounded-md border border-gray-700 bg-gray-800/50 p-3 space-y-2">
+                  <p className="text-xs text-gray-400">Quick actions</p>
+                  <button
+                    type="button"
+                    onClick={handleOpenEdgeNotes}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border border-blue-500/50 text-blue-300 hover:bg-blue-500/10 text-sm font-medium rounded-lg transition-colors"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2z" />
+                    </svg>
+                    Open Notes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleAskAssistantAboutEdge(
+                        `Explain the relationship between ${selectedLink.sourceName} and ${selectedLink.targetName}. Include key mechanisms, evidence strength, and open questions.`
+                      )
+                    }
+                    disabled={isCombinedMapSelected}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10 text-sm font-medium rounded-lg transition-colors disabled:opacity-60"
+                  >
+                    Ask AI about this link
+                  </button>
                 </div>
 
                 {edgeResearchMode && (
@@ -4078,16 +4193,19 @@ export default function DashboardPage() {
                       <p className="text-[11px] text-cyan-100/75">
                         Suggested link questions
                       </p>
-                      <ul className="space-y-1">
+                      <div className="space-y-1">
                         {edgeResearchQuestions.map((question) => (
-                          <li
+                          <button
                             key={question}
-                            className="text-xs text-cyan-50/90 rounded-md border border-cyan-900/40 bg-cyan-950/30 px-2.5 py-1.5"
+                            type="button"
+                            onClick={() => handleAskAssistantAboutEdge(question)}
+                            disabled={isCombinedMapSelected}
+                            className="w-full text-left text-xs text-cyan-50/90 rounded-md border border-cyan-900/40 bg-cyan-950/30 px-2.5 py-1.5 transition-colors hover:border-cyan-500/60 hover:bg-cyan-900/30 disabled:opacity-60"
                           >
                             {question}
-                          </li>
+                          </button>
                         ))}
-                      </ul>
+                      </div>
                     </div>
 
                     <div className="space-y-1.5">
@@ -4108,10 +4226,6 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 )}
-
-                <p className="text-sm text-gray-300 leading-relaxed">
-                  {explainLink(selectedLink)}
-                </p>
 
                 <div className="space-y-2">
                   <div className="flex gap-2">
@@ -4353,12 +4467,23 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  <div className="space-y-2">
+                  <div ref={edgeNotesSectionRef} className="space-y-2">
                     <div className="flex items-center justify-between">
                       <p className="text-xs text-gray-400">Edge notes</p>
-                      <span className="text-[11px] text-gray-500">
-                        {edgeNotesWordCount} words · {edgeNotesCharCount} chars
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-gray-500">
+                          {edgeNotesWordCount} words · {edgeNotesCharCount} chars
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEdgeNotesExpanded((prevExpanded) => !prevExpanded)
+                          }
+                          className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+                        >
+                          {edgeNotesExpanded ? "Shrink" : "Expand"}
+                        </button>
+                      </div>
                     </div>
                     <div className="rounded-md border border-gray-800 bg-gray-800/40 p-2 space-y-1.5">
                       <p className="text-[11px] text-gray-500">Quick note blocks</p>
@@ -4392,7 +4517,9 @@ export default function DashboardPage() {
                         isCombinedMapSelected ||
                         !selectedMapCanEdit
                       }
-                      className="w-full min-h-[180px] rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                      className={`w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-60 ${
+                        edgeNotesExpanded ? "min-h-[360px]" : "min-h-[180px]"
+                      }`}
                     />
                     <div className="flex items-center justify-between gap-2">
                       <span

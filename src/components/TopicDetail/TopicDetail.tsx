@@ -566,7 +566,6 @@ export default function TopicDetail({
 
           <button
             onClick={onOpenNotes}
-            disabled={readOnly}
             className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border border-blue-500/50 text-blue-300 hover:bg-blue-500/10 text-sm font-medium rounded-lg transition-colors"
           >
             <svg
@@ -579,7 +578,7 @@ export default function TopicDetail({
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2z" />
             </svg>
-            Open Notes
+            {readOnly ? "View Notes" : "Open Notes"}
           </button>
 
           <button

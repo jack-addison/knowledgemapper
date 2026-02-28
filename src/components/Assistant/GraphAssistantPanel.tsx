@@ -209,6 +209,15 @@ export default function GraphAssistantPanel({
 
   const hasMap = Boolean(mapId);
   const dockOffsetClass = fullscreen ? "bottom-6 right-6" : "bottom-3 right-3";
+  const dockOffsetStyle = fullscreen
+    ? {
+        bottom: "max(1.5rem, env(safe-area-inset-bottom))",
+        right: "max(1.5rem, env(safe-area-inset-right))",
+      }
+    : {
+        bottom: "max(0.75rem, env(safe-area-inset-bottom))",
+        right: "max(0.75rem, env(safe-area-inset-right))",
+      };
   const scopeDisabled = {
     map: !hasMap || isCombinedMap,
     node: !hasMap || isCombinedMap || !selectedTopic,
@@ -897,6 +906,7 @@ export default function GraphAssistantPanel({
           type="button"
           onClick={() => setIsOpen(true)}
           className={`absolute z-40 h-10 w-10 rounded-full border border-cyan-500/70 bg-cyan-500/10 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 ${dockOffsetClass}`}
+          style={dockOffsetStyle}
           title="AI"
           aria-label="Open AI panel"
         >
@@ -905,7 +915,10 @@ export default function GraphAssistantPanel({
       )}
 
       {isOpen && (
-        <aside className={`absolute z-40 flex h-[min(82vh,760px)] w-[min(46rem,calc(100%-1.5rem))] flex-col rounded-xl border border-gray-700/90 bg-gray-950/98 shadow-2xl backdrop-blur-[1px] ${dockOffsetClass}`}>
+        <aside
+          className={`absolute z-40 flex h-[min(82vh,760px)] w-[min(46rem,calc(100%-1.5rem))] flex-col rounded-xl border border-gray-700/90 bg-gray-950/98 shadow-2xl backdrop-blur-[1px] ${dockOffsetClass}`}
+          style={dockOffsetStyle}
+        >
           <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
             <div>
               <p className="text-sm font-semibold text-white">Graph Assistant</p>

@@ -7,6 +7,9 @@ interface NotesSidebarProps {
   initialNotes: string;
   onSave: (notes: string) => Promise<void>;
   onClose: () => void;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  readOnly?: boolean;
 }
 
 const NOTE_TEMPLATES = [
@@ -42,6 +45,9 @@ export default function NotesSidebar({
   initialNotes,
   onSave,
   onClose,
+  isExpanded = false,
+  onToggleExpand,
+  readOnly = false,
 }: NotesSidebarProps) {
   const [notes, setNotes] = useState(initialNotes);
   const [saving, setSaving] = useState(false);
@@ -91,11 +97,13 @@ export default function NotesSidebar({
   );
 
   const insertTimestamp = useCallback(() => {
+    if (readOnly) return;
     const stamp = new Date().toLocaleString();
     appendTemplate(`Timestamp:\n- ${stamp}\n- `);
-  }, [appendTemplate]);
+  }, [appendTemplate, readOnly]);
 
   const handleSave = useCallback(async () => {
+    if (readOnly) return;
     setSaving(true);
     setSaveState("idle");
     try {
@@ -108,7 +116,7 @@ export default function NotesSidebar({
     } finally {
       setSaving(false);
     }
-  }, [notes, onSave]);
+  }, [notes, onSave, readOnly]);
 
   const handleRevert = useCallback(() => {
     setNotes(initialNotes);
@@ -127,12 +135,12 @@ export default function NotesSidebar({
   }, [notes]);
 
   useEffect(() => {
-    if (!autoSave || !dirty || saving) return;
+    if (readOnly || !autoSave || !dirty || saving) return;
     const timeout = window.setTimeout(() => {
       void handleSave();
     }, 1200);
     return () => window.clearTimeout(timeout);
-  }, [autoSave, dirty, handleSave, saving]);
+  }, [autoSave, dirty, handleSave, readOnly, saving]);
 
   useEffect(() => {
     if (copyState === "idle") return;
@@ -141,6 +149,7 @@ export default function NotesSidebar({
   }, [copyState]);
 
   useEffect(() => {
+    if (readOnly) return;
     function handleKeyDown(event: KeyboardEvent) {
       const key = event.key.toLowerCase();
       if ((event.metaKey || event.ctrlKey) && key === "s") {
@@ -153,7 +162,7 @@ export default function NotesSidebar({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleSave, saving]);
+  }, [handleSave, readOnly, saving]);
 
   return (
     <aside className="h-full border border-gray-700 rounded-lg bg-gray-900 p-3 md:p-4 flex flex-col">
@@ -161,13 +170,27 @@ export default function NotesSidebar({
         <div>
           <h3 className="text-base font-semibold text-white">Notes</h3>
           <p className="mt-0.5 text-[11px] text-gray-400">{topicName}</p>
+          {readOnly && (
+            <p className="mt-1 text-[11px] text-cyan-300">Read-only notes view</p>
+          )}
         </div>
-        <button
-          onClick={onClose}
-          className="text-sm text-gray-400 hover:text-white"
-        >
-          ✕
-        </button>
+        <div className="flex items-center gap-2">
+          {onToggleExpand && (
+            <button
+              type="button"
+              onClick={onToggleExpand}
+              className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+            >
+              {isExpanded ? "Shrink" : "Expand"}
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="text-sm text-gray-400 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
       </div>
 
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
@@ -176,6 +199,7 @@ export default function NotesSidebar({
             type="checkbox"
             checked={autoSave}
             onChange={(e) => setAutoSave(e.target.checked)}
+            disabled={readOnly}
             className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-900 accent-blue-500"
           />
           Autosave
@@ -183,6 +207,7 @@ export default function NotesSidebar({
         <button
           type="button"
           onClick={insertTimestamp}
+          disabled={readOnly}
           className="rounded-md border border-gray-700 px-2.5 py-1 text-[11px] text-gray-300 hover:border-blue-500/60 hover:text-blue-200"
         >
           Insert timestamp
@@ -224,7 +249,8 @@ export default function NotesSidebar({
                 key={template.id}
                 type="button"
                 onClick={() => appendTemplate(template.text)}
-                className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-blue-500/60 hover:text-blue-200"
+                disabled={readOnly}
+                className="rounded-full border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-blue-500/60 hover:text-blue-200 disabled:opacity-50"
               >
                 {template.label}
               </button>
@@ -236,10 +262,12 @@ export default function NotesSidebar({
       <textarea
         value={notes}
         onChange={(e) => {
+          if (readOnly) return;
           setNotes(e.target.value);
           markDirty();
         }}
         placeholder="Write notes about this topic..."
+        readOnly={readOnly}
         className="flex-1 min-h-[420px] w-full px-3 py-2 text-sm bg-gray-950 border border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 text-gray-100 placeholder-gray-500 resize-none"
       />
 
@@ -262,7 +290,9 @@ export default function NotesSidebar({
                         : "text-gray-500"
               }`}
             >
-              {saveState === "error"
+              {readOnly
+                ? "Read-only"
+                : saveState === "error"
                 ? "Failed to save"
                 : saving
                   ? "Saving..."
@@ -282,14 +312,14 @@ export default function NotesSidebar({
           <button
             type="button"
             onClick={handleRevert}
-            disabled={!dirty || saving}
+            disabled={readOnly || !dirty || saving}
             className="rounded-md border border-gray-700 px-2.5 py-1 text-[11px] text-gray-200 transition-colors hover:border-gray-500 disabled:opacity-50"
           >
             Revert
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || (!dirty && saveState === "saved")}
+            disabled={readOnly || saving || (!dirty && saveState === "saved")}
             className="rounded-md bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save Notes"}
