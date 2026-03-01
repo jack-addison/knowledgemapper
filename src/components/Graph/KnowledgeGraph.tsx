@@ -500,7 +500,6 @@ export default function KnowledgeGraph({
   const [forcesApplied, setForcesApplied] = useState(0);
   const [internalClusterOverviewEnabled, setInternalClusterOverviewEnabled] =
     useState(false);
-  const [expandedClusters, setExpandedClusters] = useState<Set<number>>(new Set());
   const [internalFocusedClusterId, setInternalFocusedClusterId] = useState<
     number | null
   >(null);
@@ -530,7 +529,6 @@ export default function KnowledgeGraph({
   );
   const handleToggleClusterOverview = useCallback(() => {
     updateFocusedClusterId(null);
-    setExpandedClusters(new Set());
     updateClusterOverviewEnabled(!clusterOverviewEnabled);
   }, [clusterOverviewEnabled, updateClusterOverviewEnabled, updateFocusedClusterId]);
   const clusterSignature = useMemo(
@@ -573,16 +571,11 @@ export default function KnowledgeGraph({
 
     const validClusters = new Set<number>(Array.from(clusterNodeMap.keys()));
     const next = new Set<number>();
-    for (const clusterId of expandedClusters) {
-      if (validClusters.has(clusterId)) {
-        next.add(clusterId);
-      }
-    }
     if (selectedClusterId !== null && validClusters.has(selectedClusterId)) {
       next.add(selectedClusterId);
     }
     return next;
-  }, [clusterNodeMap, clusterOverviewEnabled, expandedClusters, selectedClusterId]);
+  }, [clusterNodeMap, clusterOverviewEnabled, selectedClusterId]);
 
   const baseDisplayData = useMemo<{
     nodes: DisplayNode[];
@@ -1306,7 +1299,6 @@ export default function KnowledgeGraph({
 
       if (isDoubleClick) {
         updateFocusedClusterId(clusterId);
-        setExpandedClusters(new Set([clusterId]));
         lastClusterClickRef.current = null;
       } else {
         lastClusterClickRef.current = { nodeId, at: now };

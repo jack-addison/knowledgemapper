@@ -14,6 +14,7 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const router = useRouter();
   const supabase = createClient();
   const safeNext = useMemo(() => {
@@ -70,6 +71,25 @@ export default function SignupPage() {
     setLoading(false);
   }
 
+  async function handleGoogleSignup() {
+    setGoogleLoading(true);
+    setError("");
+    setSuccess("");
+    const callbackPath = safeNext
+      ? `/auth/callback?next=${encodeURIComponent(safeNext)}`
+      : "/auth/callback";
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}${callbackPath}`,
+      },
+    });
+    if (error) {
+      setError(error.message);
+      setGoogleLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen p-4 md:p-8 bg-gradient-to-b from-gray-950 via-gray-950 to-slate-950">
       <div className="max-w-5xl mx-auto min-h-[calc(100vh-2rem)] md:min-h-[calc(100vh-4rem)] grid md:grid-cols-2 gap-6 items-center">
@@ -103,6 +123,41 @@ export default function SignupPage() {
           <p className="text-sm text-gray-400 mb-6">
             Start with your email and password.
           </p>
+
+          <button
+            type="button"
+            onClick={() => void handleGoogleSignup()}
+            disabled={googleLoading}
+            className="mb-4 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-700 bg-gray-950 px-4 py-2.5 text-sm font-medium text-gray-100 transition-colors hover:border-gray-500 hover:bg-gray-900 disabled:opacity-60"
+          >
+            <svg viewBox="0 0 24 24" className="h-4.5 w-4.5" aria-hidden="true">
+              <path
+                fill="#4285F4"
+                d="M23.49 12.27c0-.79-.07-1.56-.2-2.3H12v4.35h6.46a5.53 5.53 0 0 1-2.4 3.63v3.01h3.87c2.27-2.09 3.56-5.18 3.56-8.69Z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.07 7.94-2.91l-3.87-3.01c-1.08.72-2.45 1.14-4.07 1.14-3.13 0-5.78-2.11-6.72-4.94H1.29v3.1A12 12 0 0 0 12 24Z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.38-2.28v-3.1H1.29A12 12 0 0 0 0 12c0 1.93.46 3.76 1.29 5.38l3.99-3.1Z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.78c1.76 0 3.34.6 4.58 1.79l3.44-3.44C17.94 1.19 15.24 0 12 0A12 12 0 0 0 1.29 6.62l3.99 3.1C6.22 6.9 8.87 4.78 12 4.78Z"
+              />
+            </svg>
+            {googleLoading ? "Redirecting..." : "Continue with Google"}
+          </button>
+
+          <div className="mb-4 flex items-center gap-3">
+            <span className="h-px flex-1 bg-gray-800" />
+            <span className="text-[11px] uppercase tracking-wide text-gray-500">
+              or with email
+            </span>
+            <span className="h-px flex-1 bg-gray-800" />
+          </div>
 
           <form onSubmit={handleSignup} className="space-y-4">
             <div>
@@ -193,7 +248,7 @@ export default function SignupPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || googleLoading}
               className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg font-medium transition-colors"
             >
               {loading ? "Creating account..." : "Create account"}
