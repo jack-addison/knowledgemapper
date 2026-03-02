@@ -4,6 +4,19 @@ import { createAdminSupabaseClient } from "@/lib/supabase-admin";
 import { generateEmbedding, suggestRelatedTopics } from "@/lib/openai";
 import { getMapAccess, listAccessibleMapIds } from "@/lib/map-access";
 
+function normalizeInterestName(input: string): string {
+  const collapsed = input.trim().replace(/\s+/g, " ");
+  if (!collapsed) return "";
+  return collapsed
+    .split(" ")
+    .map((word) =>
+      word.length > 0
+        ? `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`
+        : word
+    )
+    .join(" ");
+}
+
 export async function GET(request: NextRequest) {
   const supabase = await createServerSupabaseClient();
   const {
@@ -64,7 +77,14 @@ export async function POST(request: NextRequest) {
   }
 
   const { name, mapId } = await request.json();
-  if (!name || typeof name !== "string") {
+  if (typeof name !== "string") {
+    return NextResponse.json(
+      { error: "Interest name is required" },
+      { status: 400 }
+    );
+  }
+  const normalizedName = normalizeInterestName(name);
+  if (!normalizedName) {
     return NextResponse.json(
       { error: "Interest name is required" },
       { status: 400 }
@@ -86,8 +106,8 @@ export async function POST(request: NextRequest) {
   }
 
   const [embeddingResult, relatedResult] = await Promise.allSettled([
-    generateEmbedding(name),
-    suggestRelatedTopics(name),
+    generateEmbedding(normalizedName),
+    suggestRelatedTopics(normalizedName),
   ]);
 
   const embedding =
@@ -96,7 +116,7 @@ export async function POST(request: NextRequest) {
     relatedResult.status === "fulfilled" ? relatedResult.value : [];
 
   if (embeddingResult.status === "rejected") {
-    console.error("Failed to generate embedding for:", name);
+    console.error("Failed to generate embedding for:", normalizedName);
   }
 
   const admin = createAdminSupabaseClient();
@@ -105,7 +125,7 @@ export async function POST(request: NextRequest) {
     .insert({
       user_id: user.id,
       map_id: access.mapId,
-      name: name.trim(),
+      name: normalizedName,
       embedding,
       related_topics,
       notes: "",

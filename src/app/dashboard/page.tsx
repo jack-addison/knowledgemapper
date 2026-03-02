@@ -1457,9 +1457,12 @@ export default function DashboardPage() {
   }
 
   function handleRenderModeChange(mode: GraphRenderMode) {
-    setRenderMode(mode);
+    if (mode === renderMode) return;
     if (selectedMapId) {
       saveMapLayoutSettings(selectedMapId, { renderMode: mode });
+    }
+    if (typeof window !== "undefined") {
+      window.location.reload();
     }
   }
 

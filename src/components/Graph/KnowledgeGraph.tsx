@@ -743,6 +743,45 @@ type LabelTextureEntry = {
   texture: THREE.CanvasTexture;
   aspect: number;
 };
+type Node3DVisualState = {
+  nodeId: string;
+  radius: number;
+  displayColor: string;
+  alpha: number;
+  glowOpacity: number;
+  labelColor: string;
+  labelOpacity: number;
+  label: string;
+  isSuperNode: boolean;
+  inFocusedComponent: boolean;
+};
+type Node3DCacheEntry = {
+  group: THREE.Group;
+  glowSprite: THREE.Sprite;
+  glowMaterial: THREE.SpriteMaterial;
+  coreMesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
+  coreMaterial: THREE.MeshStandardMaterial;
+  rimMesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+  rimMaterial: THREE.MeshBasicMaterial;
+  labelSprite: THREE.Sprite | null;
+  labelMaterial: THREE.SpriteMaterial | null;
+  labelKey: string | null;
+};
+
+function disposeNode3DCacheEntry(entry: Node3DCacheEntry): void {
+  if (entry.labelSprite) {
+    entry.group.remove(entry.labelSprite);
+  }
+  if (entry.labelMaterial) {
+    entry.labelMaterial.dispose();
+  }
+  entry.group.remove(entry.glowSprite);
+  entry.group.remove(entry.coreMesh);
+  entry.group.remove(entry.rimMesh);
+  entry.glowMaterial.dispose();
+  entry.coreMaterial.dispose();
+  entry.rimMaterial.dispose();
+}
 
 interface KnowledgeGraphProps {
   data: GraphData;
@@ -795,9 +834,12 @@ export default function KnowledgeGraph({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastClusterClickRef = useRef<{ nodeId: string; at: number } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const graphRef = useRef<any>(null);
+  const graph2DRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const graph3DRef = useRef<any>(null);
   const sphereGeometryCacheRef = useRef<Map<number, THREE.SphereGeometry>>(new Map());
   const labelTextureCacheRef = useRef<Map<string, LabelTextureEntry>>(new Map());
+  const node3DCacheRef = useRef<Map<string, Node3DCacheEntry>>(new Map());
   const [clusterOffsetState, setClusterOffsetState] = useState<{
     signature: string;
     offsets: Record<number, { x: number; y: number }>;
@@ -931,7 +973,12 @@ export default function KnowledgeGraph({
   useEffect(() => {
     const sphereCache = sphereGeometryCacheRef.current;
     const labelCache = labelTextureCacheRef.current;
+    const node3DCache = node3DCacheRef.current;
     return () => {
+      for (const entry of node3DCache.values()) {
+        disposeNode3DCacheEntry(entry);
+      }
+      node3DCache.clear();
       for (const geometry of sphereCache.values()) {
         geometry.dispose();
       }
@@ -1120,6 +1167,18 @@ export default function KnowledgeGraph({
     effectiveExpandedClusters,
   ]);
   const displayData = clusterOverviewDisplayData ?? baseDisplayData;
+  useEffect(() => {
+    const cache = node3DCacheRef.current;
+    if (cache.size === 0) return;
+
+    const visibleNodeIds = new Set(displayData.nodes.map((node) => node.id));
+    for (const [nodeId, entry] of cache.entries()) {
+      if (!visibleNodeIds.has(nodeId)) {
+        disposeNode3DCacheEntry(entry);
+        cache.delete(nodeId);
+      }
+    }
+  }, [displayData.nodes]);
 
   const clusterOffsets = useMemo(
     () =>
@@ -1178,9 +1237,8 @@ export default function KnowledgeGraph({
   const effectiveCooldownTicks =
     renderMode === "3d" && !is3DEngineArmed ? 0 : cooldownTicks;
   const persistCurrent3DLayout = useCallback(() => {
-    if (renderMode !== "3d") return;
     if (!threeDStorageKey || typeof window === "undefined") return;
-    const fg = graphRef.current;
+    const fg = graph3DRef.current;
     if (!fg || typeof fg.graphData !== "function") return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const currentData = fg.graphData() as { nodes?: any[] } | undefined;
@@ -1206,9 +1264,9 @@ export default function KnowledgeGraph({
     } catch {
       // Ignore storage write failures.
     }
-  }, [renderMode, threeDLayoutSignature, threeDStorageKey]);
+  }, [threeDLayoutSignature, threeDStorageKey]);
   const getGraphBounds = useCallback(() => {
-    const fg = graphRef.current;
+    const fg = graph3DRef.current;
     if (!fg || typeof fg.getGraphBbox !== "function") return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const bbox = fg.getGraphBbox() as any;
@@ -1243,7 +1301,7 @@ export default function KnowledgeGraph({
   }, []);
   const moveCameraToPreset = useCallback(
     (preset: CameraPreset, duration = 650) => {
-      const fg = graphRef.current;
+      const fg = graph3DRef.current;
       if (!fg || typeof fg.cameraPosition !== "function") return;
       const bounds = getGraphBounds();
       const center = bounds?.center || { x: 0, y: 0, z: 0 };
@@ -1274,7 +1332,7 @@ export default function KnowledgeGraph({
   );
   const handleReset3DView = useCallback(() => {
     moveCameraToPreset(cameraPreset, 700);
-    const fg = graphRef.current;
+    const fg = graph3DRef.current;
     if (!fg) return;
     try {
       fg.zoomToFit?.(650, 90);
@@ -1355,7 +1413,7 @@ export default function KnowledgeGraph({
 
   // Apply forces — retry until the ref is populated (dynamic import delay)
   useEffect(() => {
-    const fg = graphRef.current;
+    const fg = renderMode === "3d" ? graph3DRef.current : graph2DRef.current;
     if (!fg || typeof fg.d3Force !== "function") {
       const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
       return () => clearTimeout(timer);
@@ -1564,7 +1622,7 @@ export default function KnowledgeGraph({
     if (renderMode !== "3d") return;
     if (!is3DEngineArmed) return;
     if (Date.now() - lastSearchFocusAtRef.current < 1200) return;
-    const fg = graphRef.current;
+    const fg = graph3DRef.current;
     if (!fg) return;
 
     const timer = window.setTimeout(() => {
@@ -1595,9 +1653,23 @@ export default function KnowledgeGraph({
   useEffect(() => {
     renderModeRef.current = renderMode;
   }, [renderMode]);
+  useEffect(() => {
+    const fg = graph3DRef.current;
+    if (!fg) return;
+    try {
+      if (renderMode === "3d") {
+        fg.resumeAnimation?.();
+        fg.refresh?.();
+      } else {
+        fg.pauseAnimation?.();
+      }
+    } catch {
+      // best effort only
+    }
+  }, [renderMode]);
 
   const sync3DControlsAndScene = useCallback(() => {
-    const fg = graphRef.current;
+    const fg = graph3DRef.current;
     if (!fg) return;
 
     const mode = renderModeRef.current;
@@ -2063,7 +2135,7 @@ export default function KnowledgeGraph({
   }, [hasFocus, focusedComponent, nodeColorMap, selectedLink, renderedLinkKeySet]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const getNode3DVisualState = useCallback((node: any) => {
+  const getNode3DVisualState = useCallback((node: any): Node3DVisualState => {
     const nodeId = typeof node?.id === "string" ? node.id : "";
     const isSuperNode = node?.isSuperNode === true || isClusterNodeId(nodeId);
     const memberCount =
@@ -2127,75 +2199,139 @@ export default function KnowledgeGraph({
     return style.inFocusedComponent ? style.label : "";
   }, [getNode3DVisualState]);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const node3DObject = useCallback((node: any) => {
-    const style = getNode3DVisualState(node);
-    const radius = style.radius;
-
+  const createNode3DCacheEntry = useCallback((): Node3DCacheEntry => {
     const group = new THREE.Group();
-
     const glowMaterial = new THREE.SpriteMaterial({
       map: glowTexture,
-      color: new THREE.Color(style.displayColor),
+      color: new THREE.Color("#ffffff"),
       transparent: true,
-      opacity: style.glowOpacity,
+      opacity: 0.2,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       depthTest: false,
     });
     const glowSprite = new THREE.Sprite(glowMaterial);
-    const glowScale = radius * 7.2;
-    glowSprite.scale.set(glowScale, glowScale, 1);
     group.add(glowSprite);
 
     const coreMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(style.displayColor),
-      emissive: new THREE.Color(style.displayColor),
-      emissiveIntensity: style.inFocusedComponent ? 0.88 : 0.28,
+      color: new THREE.Color("#ffffff"),
+      emissive: new THREE.Color("#ffffff"),
+      emissiveIntensity: 0.6,
       roughness: 0.32,
       metalness: 0.05,
       transparent: true,
-      opacity: style.alpha,
+      opacity: 0.8,
     });
-    const coreMesh = new THREE.Mesh(getSphereGeometry(radius), coreMaterial);
+    const coreMesh = new THREE.Mesh(getSphereGeometry(2.5), coreMaterial);
     coreMesh.castShadow = false;
     coreMesh.receiveShadow = false;
     group.add(coreMesh);
 
     const rimMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(style.displayColor),
+      color: new THREE.Color("#ffffff"),
       transparent: true,
-      opacity: style.inFocusedComponent ? 0.26 : 0.12,
+      opacity: 0.18,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
-    const rimMesh = new THREE.Mesh(
-      getSphereGeometry(radius * (style.isSuperNode ? 1.34 : 1.28)),
-      rimMaterial
-    );
+    const rimMesh = new THREE.Mesh(getSphereGeometry(3), rimMaterial);
     group.add(rimMesh);
 
-    if (style.label) {
-      const { texture, aspect } = getLabelTexture(style.label, style.labelColor);
-      const labelMaterial = new THREE.SpriteMaterial({
+    return {
+      group,
+      glowSprite,
+      glowMaterial,
+      coreMesh,
+      coreMaterial,
+      rimMesh,
+      rimMaterial,
+      labelSprite: null,
+      labelMaterial: null,
+      labelKey: null,
+    };
+  }, [getSphereGeometry, glowTexture]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const node3DObject = useCallback((node: any) => {
+    const style = getNode3DVisualState(node);
+    const cacheKey = style.nodeId;
+    const cache = node3DCacheRef.current;
+    let entry =
+      cacheKey.length > 0 ? (cache.get(cacheKey) ?? null) : null;
+    if (!entry) {
+      entry = createNode3DCacheEntry();
+      if (cacheKey.length > 0) {
+        cache.set(cacheKey, entry);
+      }
+    }
+
+    const radius = style.radius;
+    const rimRadius = radius * (style.isSuperNode ? 1.34 : 1.28);
+
+    const coreGeometry = getSphereGeometry(radius);
+    if (entry.coreMesh.geometry !== coreGeometry) {
+      entry.coreMesh.geometry = coreGeometry;
+    }
+    const rimGeometry = getSphereGeometry(rimRadius);
+    if (entry.rimMesh.geometry !== rimGeometry) {
+      entry.rimMesh.geometry = rimGeometry;
+    }
+
+    entry.glowMaterial.color.set(style.displayColor);
+    entry.glowMaterial.opacity = style.glowOpacity;
+    const glowScale = radius * 7.2;
+    entry.glowSprite.scale.set(glowScale, glowScale, 1);
+
+    entry.coreMaterial.color.set(style.displayColor);
+    entry.coreMaterial.emissive.set(style.displayColor);
+    entry.coreMaterial.emissiveIntensity = style.inFocusedComponent ? 0.88 : 0.28;
+    entry.coreMaterial.opacity = style.alpha;
+
+    entry.rimMaterial.color.set(style.displayColor);
+    entry.rimMaterial.opacity = style.inFocusedComponent ? 0.26 : 0.12;
+
+    const nextLabelKey =
+      style.label.length > 0 ? `${style.label}|${style.labelColor}` : null;
+
+    if (!nextLabelKey) {
+      if (entry.labelSprite && entry.labelMaterial) {
+        entry.group.remove(entry.labelSprite);
+        entry.labelMaterial.dispose();
+      }
+      entry.labelSprite = null;
+      entry.labelMaterial = null;
+      entry.labelKey = null;
+      return entry.group;
+    }
+
+    const { texture, aspect } = getLabelTexture(style.label, style.labelColor);
+    if (!entry.labelSprite || !entry.labelMaterial) {
+      entry.labelMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
         opacity: style.labelOpacity,
         depthWrite: false,
         depthTest: false,
       });
-      const labelSprite = new THREE.Sprite(labelMaterial);
-      const labelHeight = style.isSuperNode
-        ? Math.max(6.5, Math.min(13, radius * 0.6))
-        : Math.max(5.5, Math.min(11, radius * 0.55));
-      labelSprite.scale.set(labelHeight * aspect, labelHeight, 1);
-      labelSprite.position.set(0, radius + labelHeight * 0.82 + 2.5, 0);
-      labelSprite.renderOrder = 999;
-      group.add(labelSprite);
+      entry.labelSprite = new THREE.Sprite(entry.labelMaterial);
+      entry.labelSprite.renderOrder = 999;
+      entry.group.add(entry.labelSprite);
+    } else if (entry.labelMaterial.map !== texture) {
+      entry.labelMaterial.map = texture;
+      entry.labelMaterial.needsUpdate = true;
     }
 
-    return group;
-  }, [getLabelTexture, getNode3DVisualState, getSphereGeometry, glowTexture]);
+    entry.labelMaterial.opacity = style.labelOpacity;
+    entry.labelKey = nextLabelKey;
+
+    const labelHeight = style.isSuperNode
+      ? Math.max(6.5, Math.min(13, radius * 0.6))
+      : Math.max(5.5, Math.min(11, radius * 0.55));
+    entry.labelSprite.scale.set(labelHeight * aspect, labelHeight, 1);
+    entry.labelSprite.position.set(0, radius + labelHeight * 0.82 + 2.5, 0);
+
+    return entry.group;
+  }, [createNode3DCacheEntry, getLabelTexture, getNode3DVisualState, getSphereGeometry]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const link3DColor = useCallback((link: any) => {
@@ -2395,7 +2531,7 @@ export default function KnowledgeGraph({
     const focusRequestedNode = (isFollowup = false) => {
       if (cancelled) return;
 
-      const fg = graphRef.current;
+      const fg = renderMode === "3d" ? graph3DRef.current : graph2DRef.current;
       if (!fg || typeof fg.graphData !== "function") {
         if (!isFollowup && attempts < 24) {
           attempts += 1;
@@ -2639,10 +2775,32 @@ export default function KnowledgeGraph({
           </button>
         </div>
       )}
-      {renderMode === "3d" ? (
+      <div
+        className={`absolute inset-0 ${renderMode === "3d" ? "pointer-events-none opacity-0" : "pointer-events-auto opacity-100"} transition-opacity duration-150`}
+      >
+        <ForceGraph2D
+          ref={graph2DRef}
+          graphData={displayData}
+          width={dimensions.width}
+          height={dimensions.height}
+          nodeCanvasObject={nodeCanvasObject}
+          nodePointerAreaPaint={nodePointerAreaPaint}
+          linkCanvasObject={linkCanvasObject}
+          onNodeClick={handleNodeClick}
+          onNodeDragEnd={handleNodeDragEnd}
+          onLinkClick={handleLinkClick}
+          onBackgroundClick={handleBackgroundClick}
+          backgroundColor="rgba(0,0,0,0)"
+          d3AlphaDecay={alphaDecay}
+          d3VelocityDecay={velocityDecay}
+          cooldownTicks={cooldownTicks}
+        />
+      </div>
+      <div
+        className={`absolute inset-0 ${renderMode === "3d" ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"} transition-opacity duration-150`}
+      >
         <ForceGraph3D
-          key={`3d-${threeDArmingKey}`}
-          ref={graphRef}
+          ref={graph3DRef}
           graphData={displayData}
           numDimensions={3}
           width={dimensions.width}
@@ -2676,25 +2834,7 @@ export default function KnowledgeGraph({
           d3VelocityDecay={velocityDecay}
           cooldownTicks={effectiveCooldownTicks}
         />
-      ) : (
-        <ForceGraph2D
-          ref={graphRef}
-          graphData={displayData}
-          width={dimensions.width}
-          height={dimensions.height}
-          nodeCanvasObject={nodeCanvasObject}
-          nodePointerAreaPaint={nodePointerAreaPaint}
-          linkCanvasObject={linkCanvasObject}
-          onNodeClick={handleNodeClick}
-          onNodeDragEnd={handleNodeDragEnd}
-          onLinkClick={handleLinkClick}
-          onBackgroundClick={handleBackgroundClick}
-          backgroundColor="rgba(0,0,0,0)"
-          d3AlphaDecay={alphaDecay}
-          d3VelocityDecay={velocityDecay}
-          cooldownTicks={cooldownTicks}
-        />
-      )}
+      </div>
     </div>
   );
 }
