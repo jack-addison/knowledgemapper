@@ -1,4 +1,5 @@
-export type GraphLayoutMode = "classic" | "umap";
+export type GraphLayoutMode = "classic" | "umap" | "pca3d";
+export type GraphRenderMode = "2d" | "3d";
 
 export interface Interest {
   id: string;

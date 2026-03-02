@@ -13,6 +13,7 @@ import {
   EvidenceSource,
   GraphLinkSelection,
   GraphLayoutMode,
+  GraphRenderMode,
   Interest,
   GraphData,
   KnowledgeMap,
@@ -167,6 +168,7 @@ interface MapLayoutSettings {
   linkForceScale: number;
   edgeRenderTopK: number;
   layoutMode: GraphLayoutMode;
+  renderMode: GraphRenderMode;
 }
 
 interface CollaborationMember {
@@ -190,6 +192,7 @@ const DEFAULT_MAP_LAYOUT_SETTINGS: MapLayoutSettings = {
   linkForceScale: DEFAULT_LINK_FORCE_SCALE,
   edgeRenderTopK: DEFAULT_EDGE_RENDER_TOP_K,
   layoutMode: "umap",
+  renderMode: "2d",
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -209,9 +212,15 @@ function getStoredMapLayoutSettings(mapId: string): MapLayoutSettings {
   try {
     const parsed = JSON.parse(raw) as Partial<MapLayoutSettings>;
     const parsedLayoutMode =
-      parsed.layoutMode === "umap" || parsed.layoutMode === "classic"
+      parsed.layoutMode === "umap" ||
+      parsed.layoutMode === "classic" ||
+      parsed.layoutMode === "pca3d"
         ? parsed.layoutMode
         : DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode;
+    const parsedRenderMode: GraphRenderMode =
+      parsed.renderMode === "3d" || parsed.renderMode === "2d"
+        ? parsed.renderMode
+        : DEFAULT_MAP_LAYOUT_SETTINGS.renderMode;
     const parsedEdgeRenderTopK = Number(
       parsed.edgeRenderTopK ?? DEFAULT_EDGE_RENDER_TOP_K
     );
@@ -237,6 +246,7 @@ function getStoredMapLayoutSettings(mapId: string): MapLayoutSettings {
       ),
       edgeRenderTopK: safeEdgeRenderTopK,
       layoutMode: parsedLayoutMode,
+      renderMode: parsedRenderMode,
     };
   } catch {
     return DEFAULT_MAP_LAYOUT_SETTINGS;
@@ -256,6 +266,7 @@ function saveMapLayoutSettings(
     linkForceScale: updates.linkForceScale ?? current.linkForceScale,
     edgeRenderTopK: updates.edgeRenderTopK ?? current.edgeRenderTopK,
     layoutMode: updates.layoutMode ?? current.layoutMode,
+    renderMode: updates.renderMode ?? current.renderMode,
   };
 
   localStorage.setItem(getMapLayoutStorageKey(mapId), JSON.stringify(next));
@@ -369,6 +380,7 @@ function buildPublicShareUrlWithLayout(
     linkForceScale: number;
     edgeRenderTopK: number;
     layoutMode: GraphLayoutMode;
+    renderMode: GraphRenderMode;
   }
 ): string {
   const baseUrl = buildPublicShareUrl(shareSlug);
@@ -384,6 +396,7 @@ function buildPublicShareUrlWithLayout(
     url.searchParams.set("linkForce", linkForce.toFixed(2));
     url.searchParams.set("edgeTopK", String(edgeTopK));
     url.searchParams.set("layoutMode", settings.layoutMode);
+    url.searchParams.set("renderMode", settings.renderMode);
     return url.toString();
   }
 
@@ -393,6 +406,7 @@ function buildPublicShareUrlWithLayout(
     linkForce: linkForce.toFixed(2),
     edgeTopK: String(edgeTopK),
     layoutMode: settings.layoutMode,
+    renderMode: settings.renderMode,
   });
   return `${baseUrl}?${params.toString()}`;
 }
@@ -533,6 +547,13 @@ export default function DashboardPage() {
   const [creatingMap, setCreatingMap] = useState(false);
   const [floatingAddOpen, setFloatingAddOpen] = useState(false);
   const [floatingAddInput, setFloatingAddInput] = useState("");
+  const [floatingSearchOpen, setFloatingSearchOpen] = useState(false);
+  const [floatingSearchInput, setFloatingSearchInput] = useState("");
+  const [floatingSearchError, setFloatingSearchError] = useState("");
+  const [searchFocusRequest, setSearchFocusRequest] = useState<{
+    nodeId: string;
+    token: number;
+  } | null>(null);
 
   const [interests, setInterests] = useState<Interest[]>([]);
   const [combinedInterestMembers, setCombinedInterestMembers] = useState<
@@ -655,6 +676,9 @@ export default function DashboardPage() {
   const [linkForceScale, setLinkForceScale] = useState(DEFAULT_LINK_FORCE_SCALE);
   const [edgeRenderTopK, setEdgeRenderTopK] = useState(
     DEFAULT_EDGE_RENDER_TOP_K
+  );
+  const [renderMode, setRenderMode] = useState<GraphRenderMode>(
+    DEFAULT_MAP_LAYOUT_SETTINGS.renderMode
   );
   const [layoutMode, setLayoutMode] = useState<GraphLayoutMode>(
     DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode
@@ -810,6 +834,10 @@ export default function DashboardPage() {
   useEffect(() => {
     setFloatingAddOpen(false);
     setFloatingAddInput("");
+    setFloatingSearchOpen(false);
+    setFloatingSearchInput("");
+    setFloatingSearchError("");
+    setSearchFocusRequest(null);
   }, [selectedMapId]);
 
   useEffect(() => {
@@ -932,6 +960,7 @@ export default function DashboardPage() {
       setClusterThreshold(DEFAULT_CLUSTER_THRESHOLD);
       setLinkForceScale(DEFAULT_LINK_FORCE_SCALE);
       setEdgeRenderTopK(DEFAULT_EDGE_RENDER_TOP_K);
+      setRenderMode(DEFAULT_MAP_LAYOUT_SETTINGS.renderMode);
       setLayoutMode(DEFAULT_MAP_LAYOUT_SETTINGS.layoutMode);
       setTdaHealth(null);
       setTdaError("");
@@ -944,6 +973,7 @@ export default function DashboardPage() {
     setClusterThreshold(settings.clusterThreshold);
     setLinkForceScale(settings.linkForceScale);
     setEdgeRenderTopK(settings.edgeRenderTopK);
+    setRenderMode(settings.renderMode);
     setLayoutMode(settings.layoutMode);
   }, [selectedMapId]);
 
@@ -1426,6 +1456,13 @@ export default function DashboardPage() {
     }
   }
 
+  function handleRenderModeChange(mode: GraphRenderMode) {
+    setRenderMode(mode);
+    if (selectedMapId) {
+      saveMapLayoutSettings(selectedMapId, { renderMode: mode });
+    }
+  }
+
   async function handleLogout() {
     const supabase = createSupabaseBrowserClient();
     await supabase.auth.signOut();
@@ -1610,6 +1647,7 @@ export default function DashboardPage() {
               linkForceScale,
               edgeRenderTopK,
               layoutMode,
+              renderMode,
             })
           : typeof data.shareUrl === "string"
             ? data.shareUrl
@@ -1687,6 +1725,7 @@ export default function DashboardPage() {
       linkForceScale,
       edgeRenderTopK,
       layoutMode,
+      renderMode,
     });
     setShareError("");
     try {
@@ -2078,6 +2117,53 @@ export default function DashboardPage() {
     await handleAddInterest(value);
     setFloatingAddInput("");
     setFloatingAddOpen(false);
+  }
+
+  function handleFloatingSearchSubmit() {
+    const value = floatingSearchInput.trim().toLowerCase();
+    if (!value) return;
+
+    const exactMatch = interests.find(
+      (interest) => interest.name.trim().toLowerCase() === value
+    );
+    const prefixMatch = interests.find((interest) =>
+      interest.name.trim().toLowerCase().startsWith(value)
+    );
+    const partialMatch = interests.find((interest) =>
+      interest.name.trim().toLowerCase().includes(value)
+    );
+    const match = exactMatch || prefixMatch || partialMatch;
+
+    if (!match) {
+      setFloatingSearchError("No matching topic found in this map.");
+      return;
+    }
+
+    const matchedGraphNode = graphData.nodes.find((node) => node.id === match.id);
+    if (clusterOverviewEnabled && matchedGraphNode) {
+      // In cluster mode, steer the view toward the matched node's cluster.
+      setClusterFocusedClusterId(matchedGraphNode.cluster);
+    } else if (
+      clusterOverviewEnabled &&
+      clusterFocusedClusterId !== null &&
+      (!matchedGraphNode || matchedGraphNode.cluster !== clusterFocusedClusterId)
+    ) {
+      setClusterFocusedClusterId(null);
+    }
+
+    setFloatingSearchError("");
+    setFloatingSearchInput(match.name);
+    closeEdgePanelImmediate();
+    setSelectedLink(null);
+    setSelectedTopic({ id: match.id, name: match.name });
+    if (notesTopic && notesTopic.id !== match.id) {
+      setNotesTopic(null);
+    }
+    setSearchFocusRequest({
+      nodeId: match.id,
+      token: Date.now(),
+    });
+    setFloatingSearchOpen(false);
   }
 
   async function handleRemoveInterest(name: string) {
@@ -2772,7 +2858,7 @@ export default function DashboardPage() {
     ? edgeNotes.trim().split(/\s+/).length
     : 0;
   const edgeNotesCharCount = edgeNotes.length;
-  const floatingAddDockStyle = isMapFullscreen
+  const floatingDockStyle = isMapFullscreen
     ? {
         bottom: "max(1.5rem, env(safe-area-inset-bottom))",
         left: "max(1.5rem, env(safe-area-inset-left))",
@@ -2854,6 +2940,7 @@ export default function DashboardPage() {
           linkForceScale,
           edgeRenderTopK,
           layoutMode,
+          renderMode,
         })
       : null;
   const recommendedSimilarityThreshold =
@@ -3488,9 +3575,41 @@ export default function DashboardPage() {
           <div className="space-y-3 mt-3">
             <div className="flex items-center gap-3">
               <label className="text-xs text-gray-400 whitespace-nowrap w-24">
-                Layout mode
+                View mode
               </label>
               <div className="inline-flex rounded-md border border-gray-700 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => handleRenderModeChange("2d")}
+                  className={`px-3 py-1.5 text-xs transition-colors ${
+                    renderMode === "2d"
+                      ? "bg-gray-700 text-white"
+                      : "bg-gray-900/50 text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  2D
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRenderModeChange("3d")}
+                  className={`px-3 py-1.5 text-xs border-l border-gray-700 transition-colors ${
+                    renderMode === "3d"
+                      ? "bg-fuchsia-700/60 text-fuchsia-100"
+                      : "bg-gray-900/50 text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  3D (beta)
+                </button>
+              </div>
+              <span className="text-xs text-gray-500">
+                3D can reduce visual tangles on dense maps.
+              </span>
+            </div>
+            <div className="grid grid-cols-[auto,1fr] items-start gap-2">
+              <label className="text-xs text-gray-400 whitespace-nowrap w-20 pt-1">
+                Layout mode
+              </label>
+              <div className="inline-flex max-w-full flex-wrap rounded-md border border-gray-700 overflow-hidden">
                 <button
                   type="button"
                   onClick={() => handleLayoutModeChange("classic")}
@@ -3513,9 +3632,20 @@ export default function DashboardPage() {
                 >
                   UMAP (beta)
                 </button>
+                <button
+                  type="button"
+                  onClick={() => handleLayoutModeChange("pca3d")}
+                  className={`px-3 py-1.5 text-xs border-l border-gray-700 transition-colors ${
+                    layoutMode === "pca3d"
+                      ? "bg-emerald-700/60 text-emerald-100"
+                      : "bg-gray-900/50 text-gray-300 hover:bg-gray-800"
+                  }`}
+                >
+                  PCA 3D
+                </button>
               </div>
-              <span className="text-xs text-gray-500">
-                UMAP uses embeddings directly for initial 2D placement.
+              <span className="col-span-2 text-xs text-gray-500">
+                UMAP keeps local structure; PCA 3D emphasizes global separation.
               </span>
             </div>
             <div className="rounded-md border border-cyan-900/60 bg-cyan-950/20 px-3 py-2">
@@ -3764,6 +3894,7 @@ export default function DashboardPage() {
               linkForceScale={linkForceScale}
               renderLinkTopK={edgeRenderTopK}
               layoutMode={layoutMode}
+              renderMode={renderMode}
               fastSettle={fastSettleMode}
               fullscreen={isMapFullscreen}
               clusterOverviewEnabled={clusterOverviewEnabled}
@@ -3771,6 +3902,8 @@ export default function DashboardPage() {
               focusedClusterId={clusterFocusedClusterId}
               onFocusedClusterIdChange={setClusterFocusedClusterId}
               showClusterToggleButton={false}
+              threeDLayoutPersistenceKey={selectedMapId}
+              focusNodeRequest={searchFocusRequest}
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
               onBackgroundClick={() => {
@@ -3786,67 +3919,158 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {selectedMapId && !isCombinedMapSelected && selectedMapCanEdit && (
+          {selectedMapId && (
             <div
               className={`absolute z-40 ${
                 isMapFullscreen ? "bottom-6 left-6" : "bottom-3 left-3"
               }`}
-              style={floatingAddDockStyle}
+              style={floatingDockStyle}
             >
-              {floatingAddOpen ? (
-                <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
-                  <input
-                    type="text"
-                    value={floatingAddInput}
-                    onChange={(e) => setFloatingAddInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        if (!loading) {
-                          void handleFloatingAddSubmit();
+              <div className="flex items-end gap-2">
+                {floatingSearchOpen ? (
+                  <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
+                    <input
+                      type="text"
+                      value={floatingSearchInput}
+                      onChange={(e) => {
+                        setFloatingSearchInput(e.target.value);
+                        if (floatingSearchError) {
+                          setFloatingSearchError("");
                         }
-                      }
-                      if (e.key === "Escape") {
-                        e.preventDefault();
-                        setFloatingAddOpen(false);
-                        setFloatingAddInput("");
-                      }
-                    }}
-                    placeholder="Add topic..."
-                    className="w-56 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
-                    autoFocus
-                    disabled={loading}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleFloatingAddSubmit()}
-                    disabled={loading || !floatingAddInput.trim()}
-                    className="rounded-full border border-cyan-500/70 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/25 disabled:opacity-50"
-                  >
-                    {loading ? "Adding..." : "Add"}
-                  </button>
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleFloatingSearchSubmit();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setFloatingSearchOpen(false);
+                          setFloatingSearchInput("");
+                          setFloatingSearchError("");
+                        }
+                      }}
+                      placeholder="Find topic..."
+                      className="w-56 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={handleFloatingSearchSubmit}
+                      disabled={!floatingSearchInput.trim()}
+                      className="rounded-full border border-cyan-500/70 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/25 disabled:opacity-50"
+                    >
+                      Find
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFloatingSearchOpen(false);
+                        setFloatingSearchInput("");
+                        setFloatingSearchError("");
+                      }}
+                      className="rounded-full border border-white/20 px-2 py-1.5 text-xs text-gray-200 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
                   <button
                     type="button"
                     onClick={() => {
+                      setFloatingSearchOpen(true);
                       setFloatingAddOpen(false);
-                      setFloatingAddInput("");
                     }}
-                    className="rounded-full border border-white/20 px-2 py-1.5 text-xs text-gray-200 hover:text-white"
+                    className="h-11 w-11 rounded-full border border-white/30 bg-white/5 text-white/90 shadow-lg backdrop-blur transition hover:border-cyan-400/70 hover:bg-cyan-500/10"
+                    title="Search topic"
+                    aria-label="Search topic"
                   >
-                    ✕
+                    <span className="flex items-center justify-center">
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-5 w-5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <circle cx="11" cy="11" r="7" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      </svg>
+                    </span>
                   </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setFloatingAddOpen(true)}
-                  className="h-11 w-11 rounded-full border border-white/30 bg-white/5 text-xl font-medium text-white/90 shadow-lg backdrop-blur transition hover:border-cyan-400/70 hover:bg-cyan-500/10"
-                  title="Add topic"
-                  aria-label="Add topic"
-                >
-                  +
-                </button>
-              )}
+                )}
+
+                {!floatingSearchOpen && floatingSearchError && (
+                  <div className="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-200">
+                    {floatingSearchError}
+                  </div>
+                )}
+
+                {!isCombinedMapSelected && selectedMapCanEdit && (
+                  <>
+                    {floatingAddOpen ? (
+                      <div className="flex items-center gap-2 rounded-full border border-white/20 bg-gray-950/70 px-2 py-2 shadow-xl backdrop-blur">
+                        <input
+                          type="text"
+                          value={floatingAddInput}
+                          onChange={(e) => setFloatingAddInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (!loading) {
+                                void handleFloatingAddSubmit();
+                              }
+                            }
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              setFloatingAddOpen(false);
+                              setFloatingAddInput("");
+                            }
+                          }}
+                          placeholder="Add topic..."
+                          className="w-56 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 text-sm text-white placeholder:text-gray-400 focus:border-cyan-500/70 focus:outline-none"
+                          autoFocus
+                          disabled={loading}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleFloatingAddSubmit()}
+                          disabled={loading || !floatingAddInput.trim()}
+                          className="rounded-full border border-cyan-500/70 bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 hover:bg-cyan-500/25 disabled:opacity-50"
+                        >
+                          {loading ? "Adding..." : "Add"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFloatingAddOpen(false);
+                            setFloatingAddInput("");
+                          }}
+                          className="rounded-full border border-white/20 px-2 py-1.5 text-xs text-gray-200 hover:text-white"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFloatingAddOpen(true);
+                          setFloatingSearchOpen(false);
+                        }}
+                        className="h-11 w-11 rounded-full border border-white/30 bg-white/5 text-xl font-medium text-white/90 shadow-lg backdrop-blur transition hover:border-cyan-400/70 hover:bg-cyan-500/10"
+                        title="Add topic"
+                        aria-label="Add topic"
+                      >
+                        +
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           )}
 

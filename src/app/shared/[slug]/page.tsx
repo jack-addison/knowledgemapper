@@ -14,6 +14,7 @@ import type {
   GraphData,
   GraphLayoutMode,
   GraphLinkSelection,
+  GraphRenderMode,
   SharedMapSnapshot,
   TopicEvidence,
 } from "@/lib/types";
@@ -28,6 +29,7 @@ interface LearningResource {
 const DEFAULT_LINK_FORCE_SCALE = 3;
 const DEFAULT_EDGE_RENDER_TOP_K = 5;
 const DEFAULT_LAYOUT_MODE: GraphLayoutMode = "umap";
+const DEFAULT_RENDER_MODE: GraphRenderMode = "2d";
 
 function clampValue(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -46,8 +48,13 @@ function parseNumberParam(
 }
 
 function parseLayoutModeParam(raw: string | null): GraphLayoutMode {
-  if (raw === "classic" || raw === "umap") return raw;
+  if (raw === "classic" || raw === "umap" || raw === "pca3d") return raw;
   return DEFAULT_LAYOUT_MODE;
+}
+
+function parseRenderModeParam(raw: string | null): GraphRenderMode {
+  if (raw === "2d" || raw === "3d") return raw;
+  return DEFAULT_RENDER_MODE;
 }
 
 function normalizeEdgePair(a: string, b: string): { a: string; b: string } {
@@ -210,6 +217,7 @@ export default function SharedMapPage() {
     )
   );
   const sharedLayoutMode = parseLayoutModeParam(searchParams.get("layoutMode"));
+  const sharedRenderMode = parseRenderModeParam(searchParams.get("renderMode"));
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -452,6 +460,8 @@ export default function SharedMapPage() {
             linkForceScale={sharedLinkForceScale}
             renderLinkTopK={sharedEdgeRenderTopK}
             layoutMode={sharedLayoutMode}
+            renderMode={sharedRenderMode}
+            threeDLayoutPersistenceKey={slug ? `shared:${slug}` : null}
             onNodeClick={(nodeId) => {
               setSelectedTopicId(nodeId);
               setSelectedLink(null);

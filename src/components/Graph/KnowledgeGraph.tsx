@@ -1,13 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GraphData, GraphLayoutMode, GraphLinkSelection } from "@/lib/types";
+import {
+  GraphData,
+  GraphLayoutMode,
+  GraphLinkSelection,
+  GraphRenderMode,
+} from "@/lib/types";
 import * as d3 from "d3-force";
+import * as THREE from "three";
 import { UMAP } from "umap-js";
 
 // Dynamic import to avoid SSR issues
 import dynamic from "next/dynamic";
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
+  ssr: false,
+});
+const ForceGraph3D = dynamic(() => import("react-force-graph-3d"), {
   ssr: false,
 });
 
@@ -28,15 +37,31 @@ const CLUSTER_COLORS = [
 const CLUSTER_NODE_PREFIX = "__cluster__:";
 const CLUSTER_DOUBLE_CLICK_WINDOW_MS = 320;
 const NODE_RADIUS_SCALE = 2;
-const COLLISION_RADIUS = 72;
-const CHARGE_STRENGTH = -240;
-const ANCHOR_FORCE_SCALE = 0.48;
+const COLLISION_RADIUS_2D = 72;
+const COLLISION_RADIUS_3D = 60;
+const CHARGE_STRENGTH_2D = -240;
+const CHARGE_STRENGTH_3D = -190;
+const ANCHOR_FORCE_SCALE_2D = 0.48;
+const ANCHOR_FORCE_SCALE_3D_XY = 0.24;
+const ANCHOR_FORCE_SCALE_3D_Z = 0.28;
+const SPAWN_Z_JITTER = 56;
+const UMAP_3D_MIN_DEPTH = 280;
+const UMAP_3D_DEPTH_PER_NODE = 88;
+const UMAP_3D_Z_SCALE_MIN_RATIO = 0.9;
+const UMAP_3D_Z_SCALE_MAX_RATIO = 2.35;
+const UMAP_3D_AXIS_SCALE_MIN_RATIO = 0.78;
+const UMAP_3D_AXIS_SCALE_MAX_RATIO = 2.45;
+const UMAP_3D_ANCHOR_JITTER = 9;
 const LINK_FORCE_OFFSET = 0.04;
 const LINK_FORCE_SIM_SCALE = 0.17;
 const LINK_FORCE_GLOBAL_SCALE = 0.45;
 const HUB_DAMPING_EXPONENT = 0.62;
 const HUB_DAMPING_MIN = 0.12;
 const NODE_HITBOX_PADDING = 8;
+const THREE_FOG_DENSITY = 0.00056;
+const THREE_AUTO_ROTATE_SPEED = 0.28;
+const THREE_LAYOUT_STORAGE_PREFIX = "km:3d-layout:v1:";
+const THREE_LAYOUT_SIGNATURE_VERSION = "r3d-v2";
 const CLUSTER_LABEL_STOP_WORDS = new Set([
   "and",
   "for",
@@ -168,6 +193,20 @@ function normalizeLinkKey(a: string, b: string): string {
   return a < b ? `${a}::${b}` : `${b}::${a}`;
 }
 
+function hexToRgba(hex: string, alpha: number): string {
+  const safeHex = hex.replace("#", "");
+  if (safeHex.length !== 6) {
+    return `rgba(156, 163, 175, ${alpha})`;
+  }
+  const r = parseInt(safeHex.slice(0, 2), 16);
+  const g = parseInt(safeHex.slice(2, 4), 16);
+  const b = parseInt(safeHex.slice(4, 6), 16);
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+    return `rgba(156, 163, 175, ${alpha})`;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function resolveNodeRadius(params: {
   isSuperNode: boolean;
   memberCount: number | null;
@@ -254,8 +293,15 @@ function createSeededRandom(seed: number): () => number {
   };
 }
 
+type NodeAnchor = { x: number; y: number; z: number };
+type CameraPreset = "perspective" | "top" | "side";
+type Persisted3DLayout = {
+  signature: string;
+  positions: Record<string, { x: number; y: number; z: number }>;
+};
+
 function buildNodeAnchors(data: GraphData): {
-  anchors: Map<string, { x: number; y: number }>;
+  anchors: Map<string, NodeAnchor>;
   strengths: Map<string, number>;
 } {
   const clusters = new Map<number, string[]>();
@@ -318,7 +364,7 @@ function buildNodeAnchors(data: GraphData): {
     placed.push({ ...chosen, radius: cluster.radius });
   }
 
-  const anchors = new Map<string, { x: number; y: number }>();
+  const anchors = new Map<string, NodeAnchor>();
   const strengths = new Map<string, number>();
 
   for (const { clusterId, ids } of clusterSpecs) {
@@ -345,7 +391,7 @@ function buildNodeAnchors(data: GraphData): {
         offsetY = Math.sin(angle) * radius;
       }
 
-      anchors.set(id, { x: center.x + offsetX, y: center.y + offsetY });
+      anchors.set(id, { x: center.x + offsetX, y: center.y + offsetY, z: 0 });
       strengths.set(id, clusterStrength);
     }
   }
@@ -355,8 +401,9 @@ function buildNodeAnchors(data: GraphData): {
 
 function buildUmapAnchors(
   data: GraphData,
-  layoutSignature: string
-): { anchors: Map<string, { x: number; y: number }>; strengths: Map<string, number> } | null {
+  layoutSignature: string,
+  nComponents: 2 | 3
+): { anchors: Map<string, NodeAnchor>; strengths: Map<string, number> } | null {
   const embeddingRows = data.nodes
     .map((node) => {
       const embedding = toFiniteEmbedding(node.embedding);
@@ -376,20 +423,20 @@ function buildUmapAnchors(
   const nNeighbors = Math.max(3, Math.min(14, alignedRows.length - 1));
   const random = createSeededRandom(hashString(layoutSignature));
 
-  let embedding2D: number[][];
+  let projection: number[][];
   try {
     const umap = new UMAP({
-      nComponents: 2,
+      nComponents,
       nNeighbors,
       minDist: 0.12,
       random,
     });
-    embedding2D = umap.fit(alignedRows.map((row) => row.embedding));
+    projection = umap.fit(alignedRows.map((row) => row.embedding));
   } catch {
     return null;
   }
 
-  if (!Array.isArray(embedding2D) || embedding2D.length !== alignedRows.length) {
+  if (!Array.isArray(projection) || projection.length !== alignedRows.length) {
     return null;
   }
 
@@ -397,33 +444,282 @@ function buildUmapAnchors(
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
-  for (const point of embedding2D) {
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const point of projection) {
     if (!Array.isArray(point) || point.length < 2) return null;
+    if (nComponents === 3 && point.length < 3) return null;
     minX = Math.min(minX, point[0]);
     maxX = Math.max(maxX, point[0]);
     minY = Math.min(minY, point[1]);
     maxY = Math.max(maxY, point[1]);
+    const z = nComponents === 3 ? point[2] : 0;
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
   }
 
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
-  const spread = Math.max(maxX - minX, maxY - minY, 1e-6);
+  const centerZ = (minZ + maxZ) / 2;
+  const spreadX = Math.max(maxX - minX, 1e-6);
+  const spreadY = Math.max(maxY - minY, 1e-6);
+  const spreadZ = Math.max(maxZ - minZ, 1e-6);
+  const spread = Math.max(spreadX, spreadY, spreadZ, 1e-6);
   const targetSpan = Math.max(340, Math.sqrt(alignedRows.length) * 95);
   const scale = targetSpan / spread;
+  const baseXYScale = targetSpan / Math.max(spreadX, spreadY, 1e-6);
+  const minAxisScale = scale * UMAP_3D_AXIS_SCALE_MIN_RATIO;
+  const maxAxisScale = scale * UMAP_3D_AXIS_SCALE_MAX_RATIO;
+  const xScale =
+    nComponents === 3
+      ? Math.max(minAxisScale, Math.min(maxAxisScale, targetSpan / spreadX))
+      : scale;
+  const yScale =
+    nComponents === 3
+      ? Math.max(minAxisScale, Math.min(maxAxisScale, targetSpan / spreadY))
+      : scale;
+  const targetDepth =
+    nComponents === 3
+      ? Math.max(UMAP_3D_MIN_DEPTH, Math.sqrt(alignedRows.length) * UMAP_3D_DEPTH_PER_NODE)
+      : targetSpan;
+  const rawZScale = targetDepth / spreadZ;
+  const minZScale = baseXYScale * UMAP_3D_Z_SCALE_MIN_RATIO;
+  const maxZScale = baseXYScale * UMAP_3D_Z_SCALE_MAX_RATIO;
+  const zScale =
+    nComponents === 3
+      ? Math.max(minZScale, Math.min(maxZScale, rawZScale))
+      : scale;
 
-  const anchors = new Map<string, { x: number; y: number }>();
+  const anchors = new Map<string, NodeAnchor>();
   const strengths = new Map<string, number>();
   for (let i = 0; i < alignedRows.length; i++) {
     const row = alignedRows[i];
-    const point = embedding2D[i];
+    const point = projection[i];
+    const jitterSeed = hashString(`${layoutSignature}|${row.id}|3d-anchor`);
+    const jitterNorm = (jitterSeed % 1000) / 999;
+    const jitter = (jitterNorm * 2 - 1) * UMAP_3D_ANCHOR_JITTER;
+    const scaledZ = ((nComponents === 3 ? point[2] : 0) - centerZ) * zScale;
     anchors.set(row.id, {
-      x: (point[0] - centerX) * scale,
-      y: (point[1] - centerY) * scale,
+      x: (point[0] - centerX) * xScale + (nComponents === 3 ? jitter : 0),
+      y: (point[1] - centerY) * yScale - (nComponents === 3 ? jitter * 0.6 : 0),
+      z: scaledZ + (nComponents === 3 ? jitter * 0.9 : 0),
     });
-    strengths.set(row.id, 0.2);
+    strengths.set(row.id, nComponents === 3 ? 0.16 : 0.2);
   }
 
   return { anchors, strengths };
+}
+
+function dotProduct(a: number[], b: number[]): number {
+  let total = 0;
+  const length = Math.min(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    total += a[i] * b[i];
+  }
+  return total;
+}
+
+function orthogonalizeInPlace(vector: number[], basis: number[][]): void {
+  for (const base of basis) {
+    const projection = dotProduct(vector, base);
+    if (Math.abs(projection) <= 1e-12) continue;
+    for (let i = 0; i < vector.length; i++) {
+      vector[i] -= projection * base[i];
+    }
+  }
+}
+
+function normalizeInPlace(vector: number[]): number {
+  let normSq = 0;
+  for (let i = 0; i < vector.length; i++) {
+    normSq += vector[i] * vector[i];
+  }
+  if (normSq <= 1e-20) return 0;
+  const norm = Math.sqrt(normSq);
+  const invNorm = 1 / norm;
+  for (let i = 0; i < vector.length; i++) {
+    vector[i] *= invNorm;
+  }
+  return norm;
+}
+
+function buildPcaAnchors(
+  data: GraphData,
+  layoutSignature: string,
+  nComponents: 2 | 3
+): { anchors: Map<string, NodeAnchor>; strengths: Map<string, number> } | null {
+  const embeddingRows = data.nodes
+    .map((node) => {
+      const embedding = toFiniteEmbedding(node.embedding);
+      if (!embedding) return null;
+      return { id: node.id, embedding };
+    })
+    .filter((item): item is { id: string; embedding: number[] } => Boolean(item));
+
+  const dimension = dominantDimension(embeddingRows.map((row) => row.embedding));
+  if (!dimension) return null;
+
+  const alignedRows = embeddingRows.filter(
+    (row) => row.embedding.length === dimension
+  );
+  if (alignedRows.length < Math.max(4, nComponents + 1)) return null;
+
+  const means = new Array(dimension).fill(0);
+  for (const row of alignedRows) {
+    for (let i = 0; i < dimension; i++) {
+      means[i] += row.embedding[i];
+    }
+  }
+  for (let i = 0; i < dimension; i++) {
+    means[i] /= alignedRows.length;
+  }
+
+  const centeredRows: number[][] = [];
+  let centeredEnergy = 0;
+  for (const row of alignedRows) {
+    const centered = new Array(dimension);
+    for (let i = 0; i < dimension; i++) {
+      const value = row.embedding[i] - means[i];
+      centered[i] = value;
+      centeredEnergy += Math.abs(value);
+    }
+    centeredRows.push(centered);
+  }
+  if (centeredEnergy <= 1e-8) return null;
+
+  const random = createSeededRandom(hashString(`${layoutSignature}|pca|${nComponents}`));
+  const basis: number[][] = [];
+  const maxIterations = 28;
+
+  for (let component = 0; component < nComponents; component++) {
+    let vector = new Array(dimension);
+    for (let i = 0; i < dimension; i++) {
+      vector[i] = random() * 2 - 1;
+    }
+    orthogonalizeInPlace(vector, basis);
+    if (normalizeInPlace(vector) === 0) break;
+
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+      const next = new Array(dimension).fill(0);
+      for (const row of centeredRows) {
+        const rowProjection = dotProduct(row, vector);
+        if (Math.abs(rowProjection) <= 1e-14) continue;
+        for (let i = 0; i < dimension; i++) {
+          next[i] += row[i] * rowProjection;
+        }
+      }
+      orthogonalizeInPlace(next, basis);
+      if (normalizeInPlace(next) === 0) break;
+      vector = next;
+    }
+
+    if (normalizeInPlace(vector) === 0) break;
+    basis.push(vector);
+  }
+
+  if (basis.length === 0) return null;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  const projected = alignedRows.map((row, rowIndex) => {
+    const values = centeredRows[rowIndex] || new Array(dimension).fill(0);
+    const x = basis[0] ? dotProduct(values, basis[0]) : 0;
+    const y = basis[1] ? dotProduct(values, basis[1]) : 0;
+    const z = nComponents === 3 && basis[2] ? dotProduct(values, basis[2]) : 0;
+
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
+    return { id: row.id, x, y, z };
+  });
+
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const centerZ = (minZ + maxZ) / 2;
+  const spreadX = Math.max(maxX - minX, 1e-6);
+  const spreadY = Math.max(maxY - minY, 1e-6);
+  const spreadZ = Math.max(maxZ - minZ, 1e-6);
+  const spread = Math.max(spreadX, spreadY, spreadZ, 1e-6);
+  const targetSpan = Math.max(340, Math.sqrt(alignedRows.length) * 95);
+  const scale = targetSpan / spread;
+  const baseXYScale = targetSpan / Math.max(spreadX, spreadY, 1e-6);
+  const minAxisScale = scale * UMAP_3D_AXIS_SCALE_MIN_RATIO;
+  const maxAxisScale = scale * UMAP_3D_AXIS_SCALE_MAX_RATIO;
+  const xScale =
+    nComponents === 3
+      ? Math.max(minAxisScale, Math.min(maxAxisScale, targetSpan / spreadX))
+      : scale;
+  const yScale =
+    nComponents === 3
+      ? Math.max(minAxisScale, Math.min(maxAxisScale, targetSpan / spreadY))
+      : scale;
+  const targetDepth =
+    nComponents === 3
+      ? Math.max(UMAP_3D_MIN_DEPTH, Math.sqrt(alignedRows.length) * UMAP_3D_DEPTH_PER_NODE)
+      : targetSpan;
+  const rawZScale = targetDepth / spreadZ;
+  const minZScale = baseXYScale * UMAP_3D_Z_SCALE_MIN_RATIO;
+  const maxZScale = baseXYScale * UMAP_3D_Z_SCALE_MAX_RATIO;
+  const zScale =
+    nComponents === 3
+      ? Math.max(minZScale, Math.min(maxZScale, rawZScale))
+      : scale;
+
+  const anchors = new Map<string, NodeAnchor>();
+  const strengths = new Map<string, number>();
+  for (const point of projected) {
+    const jitterSeed = hashString(`${layoutSignature}|${point.id}|pca-anchor`);
+    const jitterNorm = (jitterSeed % 1000) / 999;
+    const jitter = (jitterNorm * 2 - 1) * (UMAP_3D_ANCHOR_JITTER * 0.7);
+    anchors.set(point.id, {
+      x: (point.x - centerX) * xScale + (nComponents === 3 ? jitter : 0),
+      y: (point.y - centerY) * yScale - (nComponents === 3 ? jitter * 0.5 : 0),
+      z: (point.z - centerZ) * zScale + (nComponents === 3 ? jitter * 0.8 : 0),
+    });
+    strengths.set(point.id, nComponents === 3 ? 0.15 : 0.2);
+  }
+
+  return { anchors, strengths };
+}
+
+function createAnchorForceZ(params: {
+  anchors: Map<string, NodeAnchor>;
+  strengths: Map<string, number>;
+  scale: number;
+}) {
+  const { anchors, strengths, scale } = params;
+  let nodes: Array<
+    d3.SimulationNodeDatum & { id?: unknown; z?: number; vz?: number }
+  > = [];
+
+  const force = (alpha: number) => {
+    for (const node of nodes) {
+      const rawId = node.id;
+      const nodeId = typeof rawId === "string" ? rawId : "";
+      const targetZ = anchors.get(nodeId)?.z ?? 0;
+      const currentZ = typeof node.z === "number" ? node.z : 0;
+      const strength = Math.max(0, (strengths.get(nodeId) ?? 0.08) * scale);
+      const vz = typeof node.vz === "number" ? node.vz : 0;
+      node.vz = vz + (targetZ - currentZ) * strength * alpha;
+    }
+  };
+
+  force.initialize = (
+    initialNodes: Array<
+      d3.SimulationNodeDatum & { id?: unknown; z?: number; vz?: number }
+    >
+  ) => {
+    nodes = initialNodes;
+  };
+
+  return force;
 }
 
 type DisplayNode = GraphData["nodes"][number] & {
@@ -443,16 +739,22 @@ type PointerNode = {
   x?: unknown;
   y?: unknown;
 };
+type LabelTextureEntry = {
+  texture: THREE.CanvasTexture;
+  aspect: number;
+};
 
 interface KnowledgeGraphProps {
   data: GraphData;
   selectedNodeId?: string | null;
+  focusNodeRequest?: { nodeId: string; token: number } | null;
   connectingFromName?: string | null;
   selectedLink?: Pick<GraphLinkSelection, "sourceId" | "targetId"> | null;
   linkForceScale?: number;
   renderLinkTopK?: number;
   fastSettle?: boolean;
   layoutMode?: GraphLayoutMode;
+  renderMode?: GraphRenderMode;
   fullscreen?: boolean;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onLinkClick?: (link: GraphLinkSelection) => void;
@@ -463,17 +765,20 @@ interface KnowledgeGraphProps {
   focusedClusterId?: number | null;
   onFocusedClusterIdChange?: (clusterId: number | null) => void;
   showClusterToggleButton?: boolean;
+  threeDLayoutPersistenceKey?: string | null;
 }
 
 export default function KnowledgeGraph({
   data,
   selectedNodeId,
+  focusNodeRequest = null,
   connectingFromName,
   selectedLink,
   linkForceScale = 1,
   renderLinkTopK = 0,
   fastSettle = false,
   layoutMode = "classic",
+  renderMode = "2d",
   fullscreen = false,
   onNodeClick,
   onLinkClick,
@@ -484,12 +789,15 @@ export default function KnowledgeGraph({
   focusedClusterId: focusedClusterIdProp,
   onFocusedClusterIdChange,
   showClusterToggleButton = true,
+  threeDLayoutPersistenceKey = null,
 }: KnowledgeGraphProps) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastClusterClickRef = useRef<{ nodeId: string; at: number } | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
+  const sphereGeometryCacheRef = useRef<Map<number, THREE.SphereGeometry>>(new Map());
+  const labelTextureCacheRef = useRef<Map<string, LabelTextureEntry>>(new Map());
   const [clusterOffsetState, setClusterOffsetState] = useState<{
     signature: string;
     offsets: Record<number, { x: number; y: number }>;
@@ -498,6 +806,47 @@ export default function KnowledgeGraph({
     offsets: {},
   });
   const [forcesApplied, setForcesApplied] = useState(0);
+  const [armed3DForKey, setArmed3DForKey] = useState("");
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset>("perspective");
+  const [autoOrbit, setAutoOrbit] = useState(true);
+  const autoOrbitRef = useRef(autoOrbit);
+  const renderModeRef = useRef<GraphRenderMode>(renderMode);
+  const last3DControlSyncAtRef = useRef(0);
+  const lastFocusTokenRef = useRef<number | null>(null);
+  const lastSearchFocusAtRef = useRef(0);
+  const glowTexture = useMemo(() => {
+    if (typeof document === "undefined") {
+      return new THREE.Texture();
+    }
+    const canvas = document.createElement("canvas");
+    const size = 128;
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      const gradient = ctx.createRadialGradient(
+        size / 2,
+        size / 2,
+        size * 0.08,
+        size / 2,
+        size / 2,
+        size * 0.5
+      );
+      gradient.addColorStop(0, "rgba(255,255,255,1)");
+      gradient.addColorStop(0.28, "rgba(255,255,255,0.7)");
+      gradient.addColorStop(0.62, "rgba(255,255,255,0.2)");
+      gradient.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, size, size);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    return texture;
+  }, []);
+  const persisted3DLayoutRef = useRef<Persisted3DLayout | null>(null);
   const [internalClusterOverviewEnabled, setInternalClusterOverviewEnabled] =
     useState(false);
   const [internalFocusedClusterId, setInternalFocusedClusterId] = useState<
@@ -543,6 +892,56 @@ export default function KnowledgeGraph({
         .join("|"),
     [data.nodes, layoutMode]
   );
+  const threeDStorageKey = useMemo(() => {
+    if (!threeDLayoutPersistenceKey) return null;
+    return `${THREE_LAYOUT_STORAGE_PREFIX}${threeDLayoutPersistenceKey}`;
+  }, [threeDLayoutPersistenceKey]);
+  useEffect(() => {
+    if (!threeDStorageKey || typeof window === "undefined") {
+      persisted3DLayoutRef.current = null;
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(threeDStorageKey);
+      if (!raw) {
+        persisted3DLayoutRef.current = null;
+        return;
+      }
+      const parsed = JSON.parse(raw) as Persisted3DLayout;
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.signature !== "string" ||
+        !parsed.positions ||
+        typeof parsed.positions !== "object"
+      ) {
+        persisted3DLayoutRef.current = null;
+        return;
+      }
+      persisted3DLayoutRef.current = parsed;
+    } catch {
+      persisted3DLayoutRef.current = null;
+    }
+  }, [threeDStorageKey]);
+  useEffect(() => {
+    return () => {
+      glowTexture.dispose();
+    };
+  }, [glowTexture]);
+  useEffect(() => {
+    const sphereCache = sphereGeometryCacheRef.current;
+    const labelCache = labelTextureCacheRef.current;
+    return () => {
+      for (const geometry of sphereCache.values()) {
+        geometry.dispose();
+      }
+      sphereCache.clear();
+      for (const entry of labelCache.values()) {
+        entry.texture.dispose();
+      }
+      labelCache.clear();
+    };
+  }, []);
   const clusterNodeMap = useMemo(() => {
     const map = new Map<number, DisplayNode[]>();
     for (const node of data.nodes) {
@@ -731,18 +1130,30 @@ export default function KnowledgeGraph({
   );
   const nodeAnchorLayout = useMemo(() => {
     const classicLayout = buildNodeAnchors(displayData);
-    const umapLayout =
-      layoutMode === "umap" ? buildUmapAnchors(displayData, clusterSignature) : null;
+    const semanticLayout =
+      layoutMode === "umap"
+        ? buildUmapAnchors(
+            displayData,
+            clusterSignature,
+            renderMode === "3d" ? 3 : 2
+          )
+        : layoutMode === "pca3d"
+          ? buildPcaAnchors(
+              displayData,
+              clusterSignature,
+              renderMode === "3d" ? 3 : 2
+            )
+          : null;
     const hasOffsets = Object.keys(clusterOffsets).length > 0;
-    const anchors = new Map<string, { x: number; y: number }>();
+    const anchors = new Map<string, NodeAnchor>();
     const strengths = new Map<string, number>();
 
     for (const node of displayData.nodes) {
       const base =
-        umapLayout?.anchors.get(node.id) ||
-        classicLayout.anchors.get(node.id) || { x: 0, y: 0 };
+        semanticLayout?.anchors.get(node.id) ||
+        classicLayout.anchors.get(node.id) || { x: 0, y: 0, z: 0 };
       const strength =
-        umapLayout?.strengths.get(node.id) ||
+        semanticLayout?.strengths.get(node.id) ||
         classicLayout.strengths.get(node.id) ||
         0.1;
       const offset = hasOffsets ? clusterOffsets[node.cluster] : null;
@@ -750,16 +1161,132 @@ export default function KnowledgeGraph({
       anchors.set(node.id, {
         x: base.x + (offset?.x || 0),
         y: base.y + (offset?.y || 0),
+        z: base.z,
       });
       strengths.set(node.id, strength);
     }
 
     return { anchors, strengths };
-  }, [displayData, clusterOffsets, layoutMode, clusterSignature]);
+  }, [displayData, clusterOffsets, layoutMode, clusterSignature, renderMode]);
   const safeLinkForceScale = Math.max(0.1, Math.min(4, linkForceScale));
   const alphaDecay = fastSettle ? 0.05 : 0.018;
   const velocityDecay = fastSettle ? 0.68 : 0.52;
   const cooldownTicks = fastSettle ? 120 : undefined;
+  const threeDLayoutSignature = `${THREE_LAYOUT_SIGNATURE_VERSION}|${clusterSignature}|${UMAP_3D_Z_SCALE_MIN_RATIO}|${UMAP_3D_Z_SCALE_MAX_RATIO}|${UMAP_3D_AXIS_SCALE_MIN_RATIO}|${UMAP_3D_AXIS_SCALE_MAX_RATIO}|${SPAWN_Z_JITTER}`;
+  const threeDArmingKey = `${threeDLayoutSignature}|${displayData.nodes.length}|${displayData.links.length}`;
+  const is3DEngineArmed = armed3DForKey === threeDArmingKey;
+  const effectiveCooldownTicks =
+    renderMode === "3d" && !is3DEngineArmed ? 0 : cooldownTicks;
+  const persistCurrent3DLayout = useCallback(() => {
+    if (renderMode !== "3d") return;
+    if (!threeDStorageKey || typeof window === "undefined") return;
+    const fg = graphRef.current;
+    if (!fg || typeof fg.graphData !== "function") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const currentData = fg.graphData() as { nodes?: any[] } | undefined;
+    const nodes = Array.isArray(currentData?.nodes) ? currentData.nodes : [];
+    const positions: Persisted3DLayout["positions"] = {};
+    for (const node of nodes) {
+      const nodeId = typeof node?.id === "string" ? node.id : "";
+      if (!nodeId) continue;
+      const x = typeof node?.x === "number" ? node.x : NaN;
+      const y = typeof node?.y === "number" ? node.y : NaN;
+      const z = typeof node?.z === "number" ? node.z : NaN;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      positions[nodeId] = { x, y, z };
+    }
+    if (Object.keys(positions).length === 0) return;
+    const payload: Persisted3DLayout = {
+      signature: threeDLayoutSignature,
+      positions,
+    };
+    persisted3DLayoutRef.current = payload;
+    try {
+      localStorage.setItem(threeDStorageKey, JSON.stringify(payload));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [renderMode, threeDLayoutSignature, threeDStorageKey]);
+  const getGraphBounds = useCallback(() => {
+    const fg = graphRef.current;
+    if (!fg || typeof fg.getGraphBbox !== "function") return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bbox = fg.getGraphBbox() as any;
+    const x = Array.isArray(bbox?.x) ? bbox.x : null;
+    const y = Array.isArray(bbox?.y) ? bbox.y : null;
+    const z = Array.isArray(bbox?.z) ? bbox.z : null;
+    if (!x || !y || !z) return null;
+    const [minX, maxX] = x;
+    const [minY, maxY] = y;
+    const [minZ, maxZ] = z;
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(maxY) ||
+      !Number.isFinite(minZ) ||
+      !Number.isFinite(maxZ)
+    ) {
+      return null;
+    }
+    const center = {
+      x: (minX + maxX) / 2,
+      y: (minY + maxY) / 2,
+      z: (minZ + maxZ) / 2,
+    };
+    const span = {
+      x: Math.max(1, maxX - minX),
+      y: Math.max(1, maxY - minY),
+      z: Math.max(1, maxZ - minZ),
+    };
+    return { center, span };
+  }, []);
+  const moveCameraToPreset = useCallback(
+    (preset: CameraPreset, duration = 650) => {
+      const fg = graphRef.current;
+      if (!fg || typeof fg.cameraPosition !== "function") return;
+      const bounds = getGraphBounds();
+      const center = bounds?.center || { x: 0, y: 0, z: 0 };
+      const maxSpan = bounds
+        ? Math.max(bounds.span.x, bounds.span.y, bounds.span.z)
+        : 320;
+      const distance = Math.max(280, maxSpan * 1.8);
+      const position =
+        preset === "top"
+          ? { x: center.x, y: center.y + distance, z: center.z }
+          : preset === "side"
+            ? { x: center.x + distance, y: center.y, z: center.z }
+            : {
+                x: center.x + distance * 0.9,
+                y: center.y + distance * 0.65,
+                z: center.z + distance * 0.95,
+              };
+      fg.cameraPosition(position, center, duration);
+    },
+    [getGraphBounds]
+  );
+  const handleCameraPresetChange = useCallback(
+    (preset: CameraPreset) => {
+      setCameraPreset(preset);
+      moveCameraToPreset(preset, 700);
+    },
+    [moveCameraToPreset]
+  );
+  const handleReset3DView = useCallback(() => {
+    moveCameraToPreset(cameraPreset, 700);
+    const fg = graphRef.current;
+    if (!fg) return;
+    try {
+      fg.zoomToFit?.(650, 90);
+    } catch {
+      // best effort only
+    }
+  }, [cameraPreset, moveCameraToPreset]);
+  useEffect(() => {
+    return () => {
+      persistCurrent3DLayout();
+    };
+  }, [persistCurrent3DLayout]);
   const nodeClusterMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const node of displayData.nodes) {
@@ -829,53 +1356,148 @@ export default function KnowledgeGraph({
   // Apply forces — retry until the ref is populated (dynamic import delay)
   useEffect(() => {
     const fg = graphRef.current;
-    if (!fg) {
+    if (!fg || typeof fg.d3Force !== "function") {
       const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
       return () => clearTimeout(timer);
     }
 
-    fg.d3Force("charge", d3.forceManyBody().strength(CHARGE_STRENGTH).distanceMax(550));
-    fg.d3Force("collision", d3.forceCollide(COLLISION_RADIUS).strength(1).iterations(2));
-    fg.d3Force("center", d3.forceCenter(0, 0).strength(0.015));
+    let linkForce: unknown;
+    try {
+      linkForce = fg.d3Force("link");
+    } catch {
+      const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
+      return () => clearTimeout(timer);
+    }
+    if (!linkForce) {
+      const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
+      return () => clearTimeout(timer);
+    }
+    const chargeStrength =
+      renderMode === "3d" ? CHARGE_STRENGTH_3D : CHARGE_STRENGTH_2D;
+    const collisionRadius =
+      renderMode === "3d" ? COLLISION_RADIUS_3D : COLLISION_RADIUS_2D;
+
+    try {
+      fg.d3Force(
+        "charge",
+        d3.forceManyBody().strength(chargeStrength).distanceMax(550)
+      );
+      fg.d3Force(
+        "collision",
+        d3.forceCollide(collisionRadius).strength(1).iterations(2)
+      );
+      fg.d3Force("center", d3.forceCenter(0, 0).strength(0.015));
+    } catch {
+      const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
+      return () => clearTimeout(timer);
+    }
+    const anchorForceScale =
+      renderMode === "3d" ? ANCHOR_FORCE_SCALE_3D_XY : ANCHOR_FORCE_SCALE_2D;
+
+    // Seed the simulation with anchor positions.
+    // In 3D mode we also seed z so the graph doesn't spawn as a flat sheet.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const graphDataValue = fg.graphData?.() as { nodes?: any[] } | undefined;
+    const persistedPositions =
+      renderMode === "3d" &&
+      persisted3DLayoutRef.current?.signature === threeDLayoutSignature
+        ? persisted3DLayoutRef.current.positions
+        : null;
+    if (graphDataValue?.nodes) {
+      for (const node of graphDataValue.nodes) {
+        const rawId = typeof node?.id === "string" ? node.id : "";
+        if (!rawId) continue;
+        const persisted = persistedPositions?.[rawId];
+        const anchor = nodeAnchorLayout.anchors.get(rawId);
+        if (!anchor) continue;
+        if (
+          persisted &&
+          Number.isFinite(persisted.x) &&
+          Number.isFinite(persisted.y) &&
+          Number.isFinite(persisted.z)
+        ) {
+          node.x = persisted.x;
+          node.y = persisted.y;
+          if (renderMode === "3d") {
+            node.z = persisted.z;
+          }
+          continue;
+        }
+        if (!Number.isFinite(node.x)) {
+          const jitterX = renderMode === "3d" ? (Math.random() - 0.5) * 18 : 0;
+          node.x = anchor.x + jitterX;
+        }
+        if (!Number.isFinite(node.y)) {
+          const jitterY = renderMode === "3d" ? (Math.random() - 0.5) * 18 : 0;
+          node.y = anchor.y + jitterY;
+        }
+        if (renderMode === "3d") {
+          if (!Number.isFinite(node.z)) {
+            const jitterSeed = hashString(`${threeDLayoutSignature}|${rawId}|z`) % 1000;
+            const jitter = ((jitterSeed / 999) * 2 - 1) * SPAWN_Z_JITTER;
+            node.z = anchor.z + jitter;
+          }
+        } else if (Number.isFinite(node.z)) {
+          node.z = 0;
+        }
+      }
+    }
 
     // Pull nodes toward their cluster anchor so bridged mega-components stay readable.
-    fg.d3Force(
-      "x",
-      d3
-        .forceX((node: d3.SimulationNodeDatum) => {
-          const rawId = (node as { id?: unknown }).id;
-          const nodeId = typeof rawId === "string" ? rawId : "";
-          return nodeAnchorLayout.anchors.get(nodeId)?.x ?? 0;
-        })
-        .strength((node: d3.SimulationNodeDatum) => {
-          const rawId = (node as { id?: unknown }).id;
-          const nodeId = typeof rawId === "string" ? rawId : "";
-          return (
-            (nodeAnchorLayout.strengths.get(nodeId) ?? 0.09) * ANCHOR_FORCE_SCALE
-          );
-        })
-    );
-    fg.d3Force(
-      "y",
-      d3
-        .forceY((node: d3.SimulationNodeDatum) => {
-          const rawId = (node as { id?: unknown }).id;
-          const nodeId = typeof rawId === "string" ? rawId : "";
-          return nodeAnchorLayout.anchors.get(nodeId)?.y ?? 0;
-        })
-        .strength((node: d3.SimulationNodeDatum) => {
-          const rawId = (node as { id?: unknown }).id;
-          const nodeId = typeof rawId === "string" ? rawId : "";
-          return (
-            (nodeAnchorLayout.strengths.get(nodeId) ?? 0.09) * ANCHOR_FORCE_SCALE
-          );
-        })
-    );
+    try {
+      fg.d3Force(
+        "x",
+        d3
+          .forceX((node: d3.SimulationNodeDatum) => {
+            const rawId = (node as { id?: unknown }).id;
+            const nodeId = typeof rawId === "string" ? rawId : "";
+            return nodeAnchorLayout.anchors.get(nodeId)?.x ?? 0;
+          })
+          .strength((node: d3.SimulationNodeDatum) => {
+            const rawId = (node as { id?: unknown }).id;
+            const nodeId = typeof rawId === "string" ? rawId : "";
+            return (nodeAnchorLayout.strengths.get(nodeId) ?? 0.09) * anchorForceScale;
+          })
+      );
+      fg.d3Force(
+        "y",
+        d3
+          .forceY((node: d3.SimulationNodeDatum) => {
+            const rawId = (node as { id?: unknown }).id;
+            const nodeId = typeof rawId === "string" ? rawId : "";
+            return nodeAnchorLayout.anchors.get(nodeId)?.y ?? 0;
+          })
+          .strength((node: d3.SimulationNodeDatum) => {
+            const rawId = (node as { id?: unknown }).id;
+            const nodeId = typeof rawId === "string" ? rawId : "";
+            return (nodeAnchorLayout.strengths.get(nodeId) ?? 0.09) * anchorForceScale;
+          })
+      );
+      if (renderMode === "3d") {
+        fg.d3Force(
+          "z",
+          createAnchorForceZ({
+            anchors: nodeAnchorLayout.anchors,
+            strengths: nodeAnchorLayout.strengths,
+            scale: ANCHOR_FORCE_SCALE_3D_Z,
+          })
+        );
+      } else {
+        fg.d3Force("z", null);
+      }
+    } catch {
+      const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
+      return () => clearTimeout(timer);
+    }
 
-    const linkForce = fg.d3Force("link");
-    if (linkForce) {
+    const linkForceAny = linkForce;
+    const linkForceObj =
+      typeof linkForceAny === "object" && linkForceAny !== null
+        ? (linkForceAny as { distance?: (fn: unknown) => void; strength?: (fn: unknown) => void })
+        : null;
+    if (linkForceObj?.distance && linkForceObj?.strength) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      linkForce.distance((link: any) => {
+      linkForceObj.distance((link: any) => {
         const sourceId = getEndpointId(link?.source);
         const targetId = getEndpointId(link?.target);
         const isRendered =
@@ -891,7 +1513,7 @@ export default function KnowledgeGraph({
       });
       // Weaker low-similarity edges reduce large-cluster tangling.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      linkForce.strength((link: any) => {
+      linkForceObj.strength((link: any) => {
         const sourceId = getEndpointId(link?.source);
         const targetId = getEndpointId(link?.target);
         const isRendered =
@@ -918,15 +1540,106 @@ export default function KnowledgeGraph({
       });
     }
 
-    fg.d3ReheatSimulation();
+    try {
+      if (typeof fg.d3ReheatSimulation === "function") {
+        fg.d3ReheatSimulation();
+      }
+    } catch {
+      const timer = setTimeout(() => setForcesApplied((n) => n + 1), 200);
+      return () => clearTimeout(timer);
+    }
   }, [
     displayData,
     forcesApplied,
+    renderMode,
+    armed3DForKey,
+    threeDLayoutSignature,
     nodeAnchorLayout,
     safeLinkForceScale,
     renderedLinkKeySet,
     linkDegreeMap,
   ]);
+
+  useEffect(() => {
+    if (renderMode !== "3d") return;
+    if (!is3DEngineArmed) return;
+    if (Date.now() - lastSearchFocusAtRef.current < 1200) return;
+    const fg = graphRef.current;
+    if (!fg) return;
+
+    const timer = window.setTimeout(() => {
+      try {
+        if (Date.now() - lastSearchFocusAtRef.current < 1200) {
+          return;
+        }
+        moveCameraToPreset(cameraPreset, 520);
+        fg.zoomToFit?.(520, 95);
+      } catch {
+        // best effort only
+      }
+    }, 220);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    cameraPreset,
+    displayData.nodes.length,
+    is3DEngineArmed,
+    moveCameraToPreset,
+    renderMode,
+  ]);
+
+  useEffect(() => {
+    autoOrbitRef.current = autoOrbit;
+  }, [autoOrbit]);
+
+  useEffect(() => {
+    renderModeRef.current = renderMode;
+  }, [renderMode]);
+
+  const sync3DControlsAndScene = useCallback(() => {
+    const fg = graphRef.current;
+    if (!fg) return;
+
+    const mode = renderModeRef.current;
+    const orbitEnabled = mode === "3d" && autoOrbitRef.current;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const controls = typeof fg.controls === "function" ? (fg.controls() as any) : null;
+    if (controls) {
+      if ("enableDamping" in controls) {
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+      }
+      if ("autoRotate" in controls) {
+        controls.autoRotate = orbitEnabled;
+        controls.autoRotateSpeed = orbitEnabled ? THREE_AUTO_ROTATE_SPEED : 0;
+      }
+      if ("maxDistance" in controls) {
+        controls.maxDistance = 4000;
+      }
+      if ("minDistance" in controls) {
+        controls.minDistance = 70;
+      }
+      if (typeof controls.update === "function") {
+        controls.update();
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scene = typeof fg.scene === "function" ? (fg.scene() as any) : null;
+    if (scene && scene instanceof THREE.Scene) {
+      scene.fog =
+        mode === "3d"
+          ? new THREE.FogExp2(new THREE.Color("#030712"), THREE_FOG_DENSITY)
+          : null;
+    }
+  }, []);
+
+  useEffect(() => {
+    sync3DControlsAndScene();
+    const delayed = window.setTimeout(sync3DControlsAndScene, 140);
+    return () => window.clearTimeout(delayed);
+  }, [autoOrbit, renderMode, sync3DControlsAndScene]);
 
   useEffect(() => {
     function handleResize() {
@@ -1013,6 +1726,74 @@ export default function KnowledgeGraph({
 
     return offsets;
   }, [displayData.nodes, nodeAnchorLayout.anchors]);
+
+  const getSphereGeometry = useCallback((radius: number) => {
+    const key = Math.max(1, Math.round(radius * 10) / 10);
+    const cached = sphereGeometryCacheRef.current.get(key);
+    if (cached) return cached;
+    const geometry = new THREE.SphereGeometry(key, 20, 20);
+    sphereGeometryCacheRef.current.set(key, geometry);
+    return geometry;
+  }, []);
+
+  const getLabelTexture = useCallback((text: string, color: string) => {
+    const safeText = text.trim() || "Topic";
+    const key = `${safeText}|${color}`;
+    const cached = labelTextureCacheRef.current.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement("canvas");
+    const fontSize = 54;
+    const paddingX = 18;
+    const paddingY = 12;
+    const tempCtx = canvas.getContext("2d");
+    if (!tempCtx) {
+      const fallback = new THREE.CanvasTexture(canvas);
+      const fallbackEntry = { texture: fallback, aspect: 3 };
+      labelTextureCacheRef.current.set(key, fallbackEntry);
+      return fallbackEntry;
+    }
+    tempCtx.font = `600 ${fontSize}px Inter, system-ui, sans-serif`;
+    const textWidth = Math.ceil(tempCtx.measureText(safeText).width);
+    canvas.width = Math.max(128, textWidth + paddingX * 2);
+    canvas.height = fontSize + paddingY * 2;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = `600 ${fontSize}px Inter, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = color;
+      ctx.shadowColor = "rgba(0,0,0,0.85)";
+      ctx.shadowBlur = 8;
+      ctx.fillText(safeText, canvas.width / 2, canvas.height / 2 + 1);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    const entry = {
+      texture,
+      aspect: canvas.width / Math.max(1, canvas.height),
+    };
+    labelTextureCacheRef.current.set(key, entry);
+
+    // Prevent unbounded cache growth if many labels/states are generated.
+    if (labelTextureCacheRef.current.size > 1400) {
+      for (const [cacheKey, cacheEntry] of labelTextureCacheRef.current) {
+        if (cacheKey === key) continue;
+        cacheEntry.texture.dispose();
+        labelTextureCacheRef.current.delete(cacheKey);
+        if (labelTextureCacheRef.current.size <= 1000) {
+          break;
+        }
+      }
+    }
+
+    return entry;
+  }, []);
 
   // When a node is selected, find all nodes connected to it in the current graph.
   // Everything outside this component gets dimmed and desaturated.
@@ -1282,6 +2063,198 @@ export default function KnowledgeGraph({
   }, [hasFocus, focusedComponent, nodeColorMap, selectedLink, renderedLinkKeySet]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const getNode3DVisualState = useCallback((node: any) => {
+    const nodeId = typeof node?.id === "string" ? node.id : "";
+    const isSuperNode = node?.isSuperNode === true || isClusterNodeId(nodeId);
+    const memberCount =
+      typeof node?.memberCount === "number" && Number.isFinite(node.memberCount)
+        ? node.memberCount
+        : null;
+    const isSelected = nodeId === selectedNodeId;
+    const isConnectSource = connectingFromName === node.name;
+    const inConnectMode = !!connectingFromName;
+    const inFocusedComponent = !hasFocus || Boolean(focusedComponent?.has(nodeId));
+    const baseColor = nodeColorMap.get(nodeId) || "#3b82f6";
+    const radius = resolveNodeRadius({
+      isSuperNode,
+      memberCount,
+      inFocusedComponent,
+      isConnectSource,
+      isSelected,
+      inConnectMode,
+    });
+    let displayColor = baseColor;
+    let alpha = Math.max(0.35, Math.min(0.95, 0.45 + radius / 34));
+    let glowOpacity = inFocusedComponent ? 0.44 : 0.13;
+    let labelColor = inFocusedComponent ? "#f8fafc" : "#9ca3af";
+    let labelOpacity = inFocusedComponent ? 0.95 : 0.45;
+
+    if (inFocusedComponent && isConnectSource) {
+      displayColor = "#a855f7";
+      alpha = 0.97;
+      glowOpacity = 0.62;
+      labelColor = "#d8b4fe";
+    } else if (inFocusedComponent && isSelected && !isSuperNode) {
+      displayColor = "#ffffff";
+      alpha = 0.98;
+      glowOpacity = 0.7;
+      labelColor = "#ffffff";
+    } else if (!inFocusedComponent) {
+      displayColor = "#9ca3af";
+      alpha = 0.22;
+      glowOpacity = 0.09;
+      labelColor = "#9ca3af";
+      labelOpacity = 0.38;
+    }
+
+    return {
+      nodeId,
+      radius: Math.max(2.5, radius * 0.37),
+      displayColor,
+      alpha,
+      glowOpacity,
+      labelColor,
+      labelOpacity,
+      label: typeof node?.name === "string" ? node.name : "",
+      isSuperNode,
+      inFocusedComponent,
+    };
+  }, [selectedNodeId, connectingFromName, hasFocus, focusedComponent, nodeColorMap]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const node3DLabel = useCallback((node: any) => {
+    const style = getNode3DVisualState(node);
+    return style.inFocusedComponent ? style.label : "";
+  }, [getNode3DVisualState]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const node3DObject = useCallback((node: any) => {
+    const style = getNode3DVisualState(node);
+    const radius = style.radius;
+
+    const group = new THREE.Group();
+
+    const glowMaterial = new THREE.SpriteMaterial({
+      map: glowTexture,
+      color: new THREE.Color(style.displayColor),
+      transparent: true,
+      opacity: style.glowOpacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+    });
+    const glowSprite = new THREE.Sprite(glowMaterial);
+    const glowScale = radius * 7.2;
+    glowSprite.scale.set(glowScale, glowScale, 1);
+    group.add(glowSprite);
+
+    const coreMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(style.displayColor),
+      emissive: new THREE.Color(style.displayColor),
+      emissiveIntensity: style.inFocusedComponent ? 0.88 : 0.28,
+      roughness: 0.32,
+      metalness: 0.05,
+      transparent: true,
+      opacity: style.alpha,
+    });
+    const coreMesh = new THREE.Mesh(getSphereGeometry(radius), coreMaterial);
+    coreMesh.castShadow = false;
+    coreMesh.receiveShadow = false;
+    group.add(coreMesh);
+
+    const rimMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(style.displayColor),
+      transparent: true,
+      opacity: style.inFocusedComponent ? 0.26 : 0.12,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const rimMesh = new THREE.Mesh(
+      getSphereGeometry(radius * (style.isSuperNode ? 1.34 : 1.28)),
+      rimMaterial
+    );
+    group.add(rimMesh);
+
+    if (style.label) {
+      const { texture, aspect } = getLabelTexture(style.label, style.labelColor);
+      const labelMaterial = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: style.labelOpacity,
+        depthWrite: false,
+        depthTest: false,
+      });
+      const labelSprite = new THREE.Sprite(labelMaterial);
+      const labelHeight = style.isSuperNode
+        ? Math.max(6.5, Math.min(13, radius * 0.6))
+        : Math.max(5.5, Math.min(11, radius * 0.55));
+      labelSprite.scale.set(labelHeight * aspect, labelHeight, 1);
+      labelSprite.position.set(0, radius + labelHeight * 0.82 + 2.5, 0);
+      labelSprite.renderOrder = 999;
+      group.add(labelSprite);
+    }
+
+    return group;
+  }, [getLabelTexture, getNode3DVisualState, getSphereGeometry, glowTexture]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const link3DColor = useCallback((link: any) => {
+    const sourceId = getEndpointId(link?.source);
+    const targetId = getEndpointId(link?.target);
+    if (!sourceId || !targetId) return "rgba(156, 163, 175, 0.12)";
+    const normalizedCurrent = normalizeLinkKey(sourceId, targetId);
+    if (renderedLinkKeySet && !renderedLinkKeySet.has(normalizedCurrent)) {
+      return "rgba(156, 163, 175, 0.05)";
+    }
+
+    const normalizedSelected = selectedLink
+      ? normalizeLinkKey(selectedLink.sourceId, selectedLink.targetId)
+      : null;
+    const isSelectedLink =
+      normalizedSelected !== null && normalizedCurrent === normalizedSelected;
+    const inFocusedComponent =
+      !hasFocus ||
+      (focusedComponent?.has(sourceId) && focusedComponent?.has(targetId));
+    const sourceColor = nodeColorMap.get(sourceId) || "#3b82f6";
+    const similarity =
+      typeof link?.similarity === "number" && Number.isFinite(link.similarity)
+        ? link.similarity
+        : 0;
+
+    if (isSelectedLink) return "rgba(255,255,255,0.95)";
+    if (!inFocusedComponent) return "rgba(156,163,175,0.08)";
+    return hexToRgba(sourceColor, 0.1 + similarity * 0.45);
+  }, [renderedLinkKeySet, selectedLink, hasFocus, focusedComponent, nodeColorMap]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const link3DWidth = useCallback((link: any) => {
+    const sourceId = getEndpointId(link?.source);
+    const targetId = getEndpointId(link?.target);
+    if (!sourceId || !targetId) return 0.5;
+    const normalizedCurrent = normalizeLinkKey(sourceId, targetId);
+    if (renderedLinkKeySet && !renderedLinkKeySet.has(normalizedCurrent)) {
+      return 0.4;
+    }
+
+    const normalizedSelected = selectedLink
+      ? normalizeLinkKey(selectedLink.sourceId, selectedLink.targetId)
+      : null;
+    const isSelectedLink =
+      normalizedSelected !== null && normalizedCurrent === normalizedSelected;
+    const inFocusedComponent =
+      !hasFocus ||
+      (focusedComponent?.has(sourceId) && focusedComponent?.has(targetId));
+    const similarity =
+      typeof link?.similarity === "number" && Number.isFinite(link.similarity)
+        ? link.similarity
+        : 0;
+
+    if (isSelectedLink) return 3.2;
+    if (!inFocusedComponent) return 0.55;
+    return 0.7 + similarity * 2.1;
+  }, [renderedLinkKeySet, selectedLink, hasFocus, focusedComponent]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleNodeClick = useCallback((node: any) => {
     const nodeId = typeof node?.id === "string" ? node.id : "";
     const clusterId =
@@ -1318,6 +2291,18 @@ export default function KnowledgeGraph({
     const nodeId = typeof node?.id === "string" ? node.id : null;
     if (!nodeId) return;
 
+    if (renderMode === "3d") {
+      if (typeof node === "object" && node) {
+        node.fx = undefined;
+        node.fy = undefined;
+        node.fz = undefined;
+      }
+      window.setTimeout(() => {
+        persistCurrent3DLayout();
+      }, 80);
+      return;
+    }
+
     const clusterId = nodeClusterMap.get(nodeId);
     if (clusterId === undefined) return;
 
@@ -1350,7 +2335,13 @@ export default function KnowledgeGraph({
       node.fx = undefined;
       node.fy = undefined;
     }
-  }, [nodeAnchorLayout.anchors, nodeClusterMap, clusterSignature]);
+  }, [
+    clusterSignature,
+    nodeAnchorLayout.anchors,
+    nodeClusterMap,
+    persistCurrent3DLayout,
+    renderMode,
+  ]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleLinkClick = useCallback((link: any) => {
@@ -1389,6 +2380,178 @@ export default function KnowledgeGraph({
     onBackgroundClick?.();
   }, [onBackgroundClick]);
 
+  useEffect(() => {
+    const requestNodeId = focusNodeRequest?.nodeId;
+    const requestToken = focusNodeRequest?.token ?? null;
+    if (!requestNodeId || !Number.isFinite(requestToken)) return;
+    if (lastFocusTokenRef.current === requestToken) return;
+
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    let followupTimer: number | null = null;
+    let attempts = 0;
+    let hasFocused = false;
+
+    const focusRequestedNode = (isFollowup = false) => {
+      if (cancelled) return;
+
+      const fg = graphRef.current;
+      if (!fg || typeof fg.graphData !== "function") {
+        if (!isFollowup && attempts < 24) {
+          attempts += 1;
+          retryTimer = window.setTimeout(focusRequestedNode, 90);
+        }
+        return;
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const currentData = fg.graphData() as { nodes?: any[] } | undefined;
+      const nodes = Array.isArray(currentData?.nodes) ? currentData.nodes : [];
+      let visibleNodeId = requestNodeId;
+      let targetNode = nodes.find((node) => node?.id === visibleNodeId);
+      const sourceNode = data.nodes.find((node) => node.id === requestNodeId);
+
+      if (!targetNode) {
+        if (sourceNode) {
+          const superNodeId = clusterNodeId(sourceNode.cluster);
+          const clusterNode = nodes.find((node) => node?.id === superNodeId);
+          if (clusterNode) {
+            targetNode = clusterNode;
+            visibleNodeId = superNodeId;
+          }
+        }
+      }
+
+      const fallbackAnchorId =
+        targetNode && visibleNodeId
+          ? visibleNodeId
+          : sourceNode
+            ? clusterNodeId(sourceNode.cluster)
+            : requestNodeId;
+      const anchor =
+        nodeAnchorLayout.anchors.get(fallbackAnchorId) ||
+        nodeAnchorLayout.anchors.get(requestNodeId);
+
+      if (!targetNode && !anchor) {
+        if (!isFollowup && attempts < 24) {
+          attempts += 1;
+          retryTimer = window.setTimeout(focusRequestedNode, 90);
+        }
+        return;
+      }
+
+      const x =
+        typeof targetNode.x === "number" && Number.isFinite(targetNode.x)
+          ? targetNode.x
+          : (anchor?.x ?? 0);
+      const y =
+        typeof targetNode.y === "number" && Number.isFinite(targetNode.y)
+          ? targetNode.y
+          : (anchor?.y ?? 0);
+      const z =
+        typeof targetNode.z === "number" && Number.isFinite(targetNode.z)
+          ? targetNode.z
+          : (anchor?.z ?? 0);
+
+      if (renderMode === "3d" && typeof fg.cameraPosition === "function") {
+        let distance = 360;
+        if (typeof fg.camera === "function") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const camera = fg.camera() as any;
+          const camX = camera?.position?.x;
+          const camY = camera?.position?.y;
+          const camZ = camera?.position?.z;
+          if (
+            Number.isFinite(camX) &&
+            Number.isFinite(camY) &&
+            Number.isFinite(camZ)
+          ) {
+            const currentDistance = Math.hypot(camX - x, camY - y, camZ - z);
+            if (Number.isFinite(currentDistance)) {
+              distance = Math.max(220, Math.min(980, currentDistance * 0.75));
+            }
+          }
+        }
+        fg.cameraPosition(
+          {
+            x: x + distance * 0.72,
+            y: y + distance * 0.46,
+            z: z + distance * 0.9,
+          },
+          { x, y, z },
+          isFollowup ? 520 : 820
+        );
+        if (targetNode && typeof fg.zoomToFit === "function") {
+          try {
+            fg.zoomToFit(
+              isFollowup ? 420 : 760,
+              100,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (node: any) => node?.id === visibleNodeId
+            );
+          } catch {
+            // no-op fallback
+          }
+        }
+      } else {
+        if (typeof fg.centerAt === "function") {
+          fg.centerAt(x, y, isFollowup ? 420 : 760);
+        }
+        if (typeof fg.zoom === "function") {
+          let nextZoom = 2.4;
+          try {
+            const currentZoom = Number(fg.zoom());
+            if (Number.isFinite(currentZoom)) {
+              nextZoom = Math.max(2.2, Math.min(5, Math.max(currentZoom, 2.2)));
+            }
+          } catch {
+            nextZoom = 2.4;
+          }
+          fg.zoom(nextZoom, isFollowup ? 420 : 760);
+        }
+        if (targetNode && typeof fg.zoomToFit === "function") {
+          try {
+            fg.zoomToFit(
+              isFollowup ? 420 : 760,
+              140,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (node: any) => node?.id === visibleNodeId
+            );
+          } catch {
+            // no-op fallback
+          }
+        }
+      }
+
+      hasFocused = true;
+      lastSearchFocusAtRef.current = Date.now();
+      lastFocusTokenRef.current = requestToken;
+
+      // Run a short follow-up center pass after simulation movement settles.
+      if (!isFollowup) {
+        followupTimer = window.setTimeout(() => {
+          focusRequestedNode(true);
+        }, 320);
+      }
+    };
+
+    focusRequestedNode();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+      if (followupTimer !== null) {
+        window.clearTimeout(followupTimer);
+      }
+      if (!hasFocused && attempts >= 24) {
+        // Give up and consume this request token after bounded retries.
+        lastFocusTokenRef.current = requestToken;
+      }
+    };
+  }, [data.nodes, focusNodeRequest, nodeAnchorLayout.anchors, renderMode]);
+
   if (displayData.nodes.length === 0) {
     return (
       <div
@@ -1421,23 +2584,117 @@ export default function KnowledgeGraph({
           Cluster
         </button>
       )}
-      <ForceGraph2D
-        ref={graphRef}
-        graphData={displayData}
-        width={dimensions.width}
-        height={dimensions.height}
-        nodeCanvasObject={nodeCanvasObject}
-        nodePointerAreaPaint={nodePointerAreaPaint}
-        linkCanvasObject={linkCanvasObject}
-        onNodeClick={handleNodeClick}
-        onNodeDragEnd={handleNodeDragEnd}
-        onLinkClick={handleLinkClick}
-        onBackgroundClick={handleBackgroundClick}
-        backgroundColor="rgba(0,0,0,0)"
-        d3AlphaDecay={alphaDecay}
-        d3VelocityDecay={velocityDecay}
-        cooldownTicks={cooldownTicks}
-      />
+      {renderMode === "3d" && (
+        <div className="absolute left-3 top-12 z-20 flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-700/80 bg-gray-950/80 px-2 py-1.5 backdrop-blur">
+          <button
+            type="button"
+            onClick={handleReset3DView}
+            className="rounded-md border border-gray-600 bg-gray-900/70 px-2 py-1 text-[11px] text-gray-200 hover:border-gray-400"
+          >
+            Reset
+          </button>
+          <button
+            type="button"
+            onClick={() => handleCameraPresetChange("perspective")}
+            className={`rounded-md border px-2 py-1 text-[11px] ${
+              cameraPreset === "perspective"
+                ? "border-cyan-400/80 bg-cyan-500/20 text-cyan-100"
+                : "border-gray-600 bg-gray-900/70 text-gray-300 hover:border-gray-400"
+            }`}
+          >
+            Persp
+          </button>
+          <button
+            type="button"
+            onClick={() => handleCameraPresetChange("top")}
+            className={`rounded-md border px-2 py-1 text-[11px] ${
+              cameraPreset === "top"
+                ? "border-cyan-400/80 bg-cyan-500/20 text-cyan-100"
+                : "border-gray-600 bg-gray-900/70 text-gray-300 hover:border-gray-400"
+            }`}
+          >
+            Top
+          </button>
+          <button
+            type="button"
+            onClick={() => handleCameraPresetChange("side")}
+            className={`rounded-md border px-2 py-1 text-[11px] ${
+              cameraPreset === "side"
+                ? "border-cyan-400/80 bg-cyan-500/20 text-cyan-100"
+                : "border-gray-600 bg-gray-900/70 text-gray-300 hover:border-gray-400"
+            }`}
+          >
+            Side
+          </button>
+          <button
+            type="button"
+            onClick={() => setAutoOrbit((value) => !value)}
+            className={`rounded-md border px-2 py-1 text-[11px] ${
+              autoOrbit
+                ? "border-emerald-400/80 bg-emerald-500/20 text-emerald-100"
+                : "border-gray-600 bg-gray-900/70 text-gray-300 hover:border-gray-400"
+            }`}
+          >
+            Orbit {autoOrbit ? "On" : "Off"}
+          </button>
+        </div>
+      )}
+      {renderMode === "3d" ? (
+        <ForceGraph3D
+          key={`3d-${threeDArmingKey}`}
+          ref={graphRef}
+          graphData={displayData}
+          numDimensions={3}
+          width={dimensions.width}
+          height={dimensions.height}
+          nodeLabel={node3DLabel}
+          nodeThreeObject={node3DObject}
+          linkColor={link3DColor}
+          linkWidth={link3DWidth}
+          onNodeClick={handleNodeClick}
+          onNodeDragEnd={handleNodeDragEnd}
+          onLinkClick={handleLinkClick}
+          onBackgroundClick={handleBackgroundClick}
+          onEngineTick={() => {
+            if (armed3DForKey !== threeDArmingKey) {
+              setArmed3DForKey(threeDArmingKey);
+            }
+            const now = performance.now();
+            if (now - last3DControlSyncAtRef.current > 140) {
+              last3DControlSyncAtRef.current = now;
+              sync3DControlsAndScene();
+            }
+          }}
+          onEngineStop={() => {
+            if (armed3DForKey !== threeDArmingKey) {
+              setArmed3DForKey(threeDArmingKey);
+            }
+            persistCurrent3DLayout();
+          }}
+          backgroundColor="rgba(0,0,0,0)"
+          d3AlphaDecay={alphaDecay}
+          d3VelocityDecay={velocityDecay}
+          cooldownTicks={effectiveCooldownTicks}
+        />
+      ) : (
+        <ForceGraph2D
+          ref={graphRef}
+          graphData={displayData}
+          width={dimensions.width}
+          height={dimensions.height}
+          nodeCanvasObject={nodeCanvasObject}
+          nodePointerAreaPaint={nodePointerAreaPaint}
+          linkCanvasObject={linkCanvasObject}
+          onNodeClick={handleNodeClick}
+          onNodeDragEnd={handleNodeDragEnd}
+          onLinkClick={handleLinkClick}
+          onBackgroundClick={handleBackgroundClick}
+          backgroundColor="rgba(0,0,0,0)"
+          d3AlphaDecay={alphaDecay}
+          d3VelocityDecay={velocityDecay}
+          cooldownTicks={cooldownTicks}
+        />
+      )}
     </div>
   );
 }
