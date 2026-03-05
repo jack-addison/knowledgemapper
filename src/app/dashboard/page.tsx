@@ -4129,6 +4129,7 @@ export default function DashboardPage() {
                 <TopicDetail
                   key={selectedTopic.id}
                   name={selectedTopic.name}
+                  createdAt={interests.find((i) => i.id === selectedTopic.id)?.created_at}
                   relatedTopics={
                     interests.find((i) => i.id === selectedTopic.id)?.related_topics ||
                     []
@@ -4677,6 +4678,7 @@ export default function DashboardPage() {
                             <p className="text-xs text-gray-400">
                               {source.journal}
                               {source.year ? ` · ${source.year}` : ""}
+                              {source.created_at ? ` · Saved ${new Date(source.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}` : ""}
                             </p>
                             {source.authors.length > 0 && (
                               <p className="text-xs text-gray-500">

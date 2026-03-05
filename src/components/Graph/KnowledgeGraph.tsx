@@ -58,8 +58,8 @@ const LINK_FORCE_GLOBAL_SCALE = 0.45;
 const HUB_DAMPING_EXPONENT = 0.62;
 const HUB_DAMPING_MIN = 0.12;
 const NODE_HITBOX_PADDING = 8;
-const THREE_FOG_DENSITY = 0.00056;
-const THREE_AUTO_ROTATE_SPEED = 0.28;
+const THREE_FOG_DENSITY = 0.00032;
+const THREE_AUTO_ROTATE_SPEED = 1.2;
 const THREE_LAYOUT_STORAGE_PREFIX = "km:3d-layout:v1:";
 const THREE_LAYOUT_SIGNATURE_VERSION = "r3d-v2";
 const CLUSTER_LABEL_STOP_WORDS = new Set([
@@ -850,7 +850,7 @@ export default function KnowledgeGraph({
   const [forcesApplied, setForcesApplied] = useState(0);
   const [armed3DForKey, setArmed3DForKey] = useState("");
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>("perspective");
-  const [autoOrbit, setAutoOrbit] = useState(true);
+  const [autoOrbit, setAutoOrbit] = useState(false);
   const autoOrbitRef = useRef(autoOrbit);
   const renderModeRef = useRef<GraphRenderMode>(renderMode);
   const last3DControlSyncAtRef = useRef(0);
@@ -1168,16 +1168,17 @@ export default function KnowledgeGraph({
   ]);
   const displayData = clusterOverviewDisplayData ?? baseDisplayData;
   useEffect(() => {
+    // When displayData changes (e.g. clustering slider), react-force-graph-3d removes
+    // existing node objects from the scene and re-calls nodeThreeObject. We must clear
+    // the cache so fresh THREE.Groups are created — reusing the same object reference
+    // after the library detaches it causes nodes to disappear.
     const cache = node3DCacheRef.current;
     if (cache.size === 0) return;
 
-    const visibleNodeIds = new Set(displayData.nodes.map((node) => node.id));
-    for (const [nodeId, entry] of cache.entries()) {
-      if (!visibleNodeIds.has(nodeId)) {
-        disposeNode3DCacheEntry(entry);
-        cache.delete(nodeId);
-      }
+    for (const entry of cache.values()) {
+      disposeNode3DCacheEntry(entry);
     }
+    cache.clear();
   }, [displayData.nodes]);
 
   const clusterOffsets = useMemo(
@@ -1651,29 +1652,45 @@ export default function KnowledgeGraph({
   }, [autoOrbit]);
 
   useEffect(() => {
+    const prev = renderModeRef.current;
     renderModeRef.current = renderMode;
-  }, [renderMode]);
-  useEffect(() => {
-    const fg = graph3DRef.current;
-    if (!fg) return;
-    try {
-      if (renderMode === "3d") {
-        fg.resumeAnimation?.();
-        fg.refresh?.();
-      } else {
-        fg.pauseAnimation?.();
-      }
-    } catch {
-      // best effort only
-    }
-  }, [renderMode]);
 
+    // Persist 3D layout to localStorage before unmounting
+    // (graph3DRef is null after unmount, but persisted3DLayoutRef already has the data from onEngineStop)
+    if (prev === "3d" && renderMode !== "3d" && threeDStorageKey && persisted3DLayoutRef.current) {
+      try {
+        localStorage.setItem(threeDStorageKey, JSON.stringify(persisted3DLayoutRef.current));
+      } catch {
+        // Ignore storage write failures.
+      }
+    }
+
+    // Clean up 3D caches when switching away from 3D
+    if (prev === "3d" && renderMode !== "3d") {
+      const node3DCache = node3DCacheRef.current;
+      for (const entry of node3DCache.values()) {
+        disposeNode3DCacheEntry(entry);
+      }
+      node3DCache.clear();
+
+      const sphereCache = sphereGeometryCacheRef.current;
+      for (const geometry of sphereCache.values()) {
+        geometry.dispose();
+      }
+      sphereCache.clear();
+
+      const labelCache = labelTextureCacheRef.current;
+      for (const entry of labelCache.values()) {
+        entry.texture.dispose();
+      }
+      labelCache.clear();
+    }
+  }, [renderMode, threeDStorageKey]);
   const sync3DControlsAndScene = useCallback(() => {
     const fg = graph3DRef.current;
     if (!fg) return;
 
     const mode = renderModeRef.current;
-    const orbitEnabled = mode === "3d" && autoOrbitRef.current;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const controls = typeof fg.controls === "function" ? (fg.controls() as any) : null;
@@ -1682,18 +1699,11 @@ export default function KnowledgeGraph({
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
       }
-      if ("autoRotate" in controls) {
-        controls.autoRotate = orbitEnabled;
-        controls.autoRotateSpeed = orbitEnabled ? THREE_AUTO_ROTATE_SPEED : 0;
-      }
       if ("maxDistance" in controls) {
         controls.maxDistance = 4000;
       }
       if ("minDistance" in controls) {
         controls.minDistance = 70;
-      }
-      if (typeof controls.update === "function") {
-        controls.update();
       }
     }
 
@@ -1707,10 +1717,36 @@ export default function KnowledgeGraph({
     }
   }, []);
 
+  // Manual orbit: rotate camera around the graph center each frame
   useEffect(() => {
     sync3DControlsAndScene();
     const delayed = window.setTimeout(sync3DControlsAndScene, 140);
-    return () => window.clearTimeout(delayed);
+
+    let rafId = 0;
+    if (renderMode === "3d" && autoOrbit) {
+      const angularSpeed = THREE_AUTO_ROTATE_SPEED * 0.005; // radians per frame
+      const tick = () => {
+        const fg = graph3DRef.current;
+        if (fg && typeof fg.cameraPosition === "function" && typeof fg.camera === "function") {
+          const camera = fg.camera() as THREE.Camera | null;
+          if (camera) {
+            const pos = camera.position;
+            const cosA = Math.cos(angularSpeed);
+            const sinA = Math.sin(angularSpeed);
+            const newX = pos.x * cosA + pos.z * sinA;
+            const newZ = -pos.x * sinA + pos.z * cosA;
+            fg.cameraPosition({ x: newX, y: pos.y, z: newZ });
+          }
+        }
+        rafId = requestAnimationFrame(tick);
+      };
+      rafId = requestAnimationFrame(tick);
+    }
+
+    return () => {
+      window.clearTimeout(delayed);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, [autoOrbit, renderMode, sync3DControlsAndScene]);
 
   useEffect(() => {
@@ -1743,6 +1779,8 @@ export default function KnowledgeGraph({
     }
     return map;
   }, [displayData.nodes]);
+  const nodeColorMapRef = useRef(nodeColorMap);
+  nodeColorMapRef.current = nodeColorMap;
 
   const nodeNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -2194,10 +2232,10 @@ export default function KnowledgeGraph({
   }, [selectedNodeId, connectingFromName, hasFocus, focusedComponent, nodeColorMap]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const node3DLabel = useCallback((node: any) => {
-    const style = getNode3DVisualState(node);
-    return style.inFocusedComponent ? style.label : "";
-  }, [getNode3DVisualState]);
+  const node3DLabel = useCallback((_node: any) => {
+    // Labels are rendered via sprites in node3DObject, so suppress the default tooltip
+    return "";
+  }, []);
 
   const createNode3DCacheEntry = useCallback((): Node3DCacheEntry => {
     const group = new THREE.Group();
@@ -2253,22 +2291,31 @@ export default function KnowledgeGraph({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const node3DObject = useCallback((node: any) => {
-    const style = getNode3DVisualState(node);
-    const cacheKey = style.nodeId;
+    const nodeId = typeof node?.id === "string" ? node.id : "";
+    const isSuperNode = node?.isSuperNode === true || isClusterNodeId(nodeId);
+    const label = typeof node?.name === "string" ? node.name : "";
     const cache = node3DCacheRef.current;
-    let entry =
-      cacheKey.length > 0 ? (cache.get(cacheKey) ?? null) : null;
+    let entry = nodeId.length > 0 ? (cache.get(nodeId) ?? null) : null;
     if (!entry) {
       entry = createNode3DCacheEntry();
-      if (cacheKey.length > 0) {
-        cache.set(cacheKey, entry);
+      if (nodeId.length > 0) {
+        cache.set(nodeId, entry);
       }
     }
 
-    const radius = style.radius;
-    const rimRadius = radius * (style.isSuperNode ? 1.34 : 1.28);
+    // Set initial default appearance — visual state updates happen in a separate effect
+    const baseColor = nodeColorMapRef.current.get(nodeId) || "#3b82f6";
+    const radius = resolveNodeRadius({
+      isSuperNode,
+      memberCount: typeof node?.memberCount === "number" ? node.memberCount : null,
+      inFocusedComponent: true,
+      isConnectSource: false,
+      isSelected: false,
+      inConnectMode: false,
+    }) * 0.37;
+    const rimRadius = radius * (isSuperNode ? 1.34 : 1.28);
 
-    const coreGeometry = getSphereGeometry(radius);
+    const coreGeometry = getSphereGeometry(Math.max(2.5, radius));
     if (entry.coreMesh.geometry !== coreGeometry) {
       entry.coreMesh.geometry = coreGeometry;
     }
@@ -2277,23 +2324,48 @@ export default function KnowledgeGraph({
       entry.rimMesh.geometry = rimGeometry;
     }
 
-    entry.glowMaterial.color.set(style.displayColor);
-    entry.glowMaterial.opacity = style.glowOpacity;
-    const glowScale = radius * 7.2;
+    entry.glowMaterial.color.set(baseColor);
+    entry.glowMaterial.opacity = 0.44;
+    const glowScale = Math.max(2.5, radius) * 7.2;
     entry.glowSprite.scale.set(glowScale, glowScale, 1);
 
-    entry.coreMaterial.color.set(style.displayColor);
-    entry.coreMaterial.emissive.set(style.displayColor);
-    entry.coreMaterial.emissiveIntensity = style.inFocusedComponent ? 0.88 : 0.28;
-    entry.coreMaterial.opacity = style.alpha;
+    entry.coreMaterial.color.set(baseColor);
+    entry.coreMaterial.emissive.set(baseColor);
+    entry.coreMaterial.emissiveIntensity = 0.88;
+    entry.coreMaterial.opacity = 0.8;
 
-    entry.rimMaterial.color.set(style.displayColor);
-    entry.rimMaterial.opacity = style.inFocusedComponent ? 0.26 : 0.12;
+    entry.rimMaterial.color.set(baseColor);
+    entry.rimMaterial.opacity = 0.26;
 
-    const nextLabelKey =
-      style.label.length > 0 ? `${style.label}|${style.labelColor}` : null;
+    // Set up label
+    if (label.length > 0) {
+      const labelColor = "#f8fafc";
+      const { texture, aspect } = getLabelTexture(label, labelColor);
+      if (!entry.labelSprite || !entry.labelMaterial) {
+        entry.labelMaterial = new THREE.SpriteMaterial({
+          map: texture,
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+          depthTest: false,
+        });
+        entry.labelSprite = new THREE.Sprite(entry.labelMaterial);
+        entry.labelSprite.renderOrder = 999;
+        entry.group.add(entry.labelSprite);
+      } else if (entry.labelMaterial.map !== texture) {
+        entry.labelMaterial.map = texture;
+        entry.labelMaterial.needsUpdate = true;
+      }
+      entry.labelMaterial.opacity = 0.95;
+      entry.labelKey = `${label}|${labelColor}`;
 
-    if (!nextLabelKey) {
+      const safeRadius = Math.max(2.5, radius);
+      const labelHeight = isSuperNode
+        ? Math.max(6.5, Math.min(13, safeRadius * 0.6))
+        : Math.max(5.5, Math.min(11, safeRadius * 0.55));
+      entry.labelSprite.scale.set(labelHeight * aspect, labelHeight, 1);
+      entry.labelSprite.position.set(0, safeRadius + labelHeight * 0.82 + 2.5, 0);
+    } else {
       if (entry.labelSprite && entry.labelMaterial) {
         entry.group.remove(entry.labelSprite);
         entry.labelMaterial.dispose();
@@ -2301,37 +2373,70 @@ export default function KnowledgeGraph({
       entry.labelSprite = null;
       entry.labelMaterial = null;
       entry.labelKey = null;
-      return entry.group;
     }
-
-    const { texture, aspect } = getLabelTexture(style.label, style.labelColor);
-    if (!entry.labelSprite || !entry.labelMaterial) {
-      entry.labelMaterial = new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true,
-        opacity: style.labelOpacity,
-        depthWrite: false,
-        depthTest: false,
-      });
-      entry.labelSprite = new THREE.Sprite(entry.labelMaterial);
-      entry.labelSprite.renderOrder = 999;
-      entry.group.add(entry.labelSprite);
-    } else if (entry.labelMaterial.map !== texture) {
-      entry.labelMaterial.map = texture;
-      entry.labelMaterial.needsUpdate = true;
-    }
-
-    entry.labelMaterial.opacity = style.labelOpacity;
-    entry.labelKey = nextLabelKey;
-
-    const labelHeight = style.isSuperNode
-      ? Math.max(6.5, Math.min(13, radius * 0.6))
-      : Math.max(5.5, Math.min(11, radius * 0.55));
-    entry.labelSprite.scale.set(labelHeight * aspect, labelHeight, 1);
-    entry.labelSprite.position.set(0, radius + labelHeight * 0.82 + 2.5, 0);
 
     return entry.group;
-  }, [createNode3DCacheEntry, getLabelTexture, getNode3DVisualState, getSphereGeometry]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createNode3DCacheEntry, getLabelTexture, getSphereGeometry]);
+
+  // Update 3D node materials reactively when selection/focus state changes
+  // This avoids changing the nodeThreeObject callback identity on every click
+  useEffect(() => {
+    if (renderMode !== "3d") return;
+    const cache = node3DCacheRef.current;
+    if (cache.size === 0) return;
+
+    for (const [nodeId, entry] of cache) {
+      const style = getNode3DVisualState({ id: nodeId, name: nodeNameMap.get(nodeId) || "", isSuperNode: isClusterNodeId(nodeId) });
+      const radius = style.radius;
+      const rimRadius = radius * (style.isSuperNode ? 1.34 : 1.28);
+
+      const coreGeometry = getSphereGeometry(radius);
+      if (entry.coreMesh.geometry !== coreGeometry) {
+        entry.coreMesh.geometry = coreGeometry;
+      }
+      const rimGeometry = getSphereGeometry(rimRadius);
+      if (entry.rimMesh.geometry !== rimGeometry) {
+        entry.rimMesh.geometry = rimGeometry;
+      }
+
+      entry.glowMaterial.color.set(style.displayColor);
+      entry.glowMaterial.opacity = style.glowOpacity;
+      const glowScale = radius * 7.2;
+      entry.glowSprite.scale.set(glowScale, glowScale, 1);
+
+      entry.coreMaterial.color.set(style.displayColor);
+      entry.coreMaterial.emissive.set(style.displayColor);
+      entry.coreMaterial.emissiveIntensity = style.inFocusedComponent ? 0.88 : 0.28;
+      entry.coreMaterial.opacity = style.alpha;
+
+      entry.rimMaterial.color.set(style.displayColor);
+      entry.rimMaterial.opacity = style.inFocusedComponent ? 0.26 : 0.12;
+
+      // Update label color/opacity
+      if (entry.labelSprite && entry.labelMaterial) {
+        const label = style.label;
+        const labelColor = style.labelColor;
+        const nextLabelKey = label.length > 0 ? `${label}|${labelColor}` : null;
+
+        if (!nextLabelKey) {
+          entry.group.remove(entry.labelSprite);
+          entry.labelMaterial.dispose();
+          entry.labelSprite = null;
+          entry.labelMaterial = null;
+          entry.labelKey = null;
+        } else {
+          const { texture } = getLabelTexture(label, labelColor);
+          if (entry.labelMaterial.map !== texture) {
+            entry.labelMaterial.map = texture;
+            entry.labelMaterial.needsUpdate = true;
+          }
+          entry.labelMaterial.opacity = style.labelOpacity;
+          entry.labelKey = nextLabelKey;
+        }
+      }
+    }
+  }, [renderMode, getNode3DVisualState, getSphereGeometry, getLabelTexture, nodeNameMap]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const link3DColor = useCallback((link: any) => {
@@ -2775,66 +2880,66 @@ export default function KnowledgeGraph({
           </button>
         </div>
       )}
-      <div
-        className={`absolute inset-0 ${renderMode === "3d" ? "pointer-events-none opacity-0" : "pointer-events-auto opacity-100"} transition-opacity duration-150`}
-      >
-        <ForceGraph2D
-          ref={graph2DRef}
-          graphData={displayData}
-          width={dimensions.width}
-          height={dimensions.height}
-          nodeCanvasObject={nodeCanvasObject}
-          nodePointerAreaPaint={nodePointerAreaPaint}
-          linkCanvasObject={linkCanvasObject}
-          onNodeClick={handleNodeClick}
-          onNodeDragEnd={handleNodeDragEnd}
-          onLinkClick={handleLinkClick}
-          onBackgroundClick={handleBackgroundClick}
-          backgroundColor="rgba(0,0,0,0)"
-          d3AlphaDecay={alphaDecay}
-          d3VelocityDecay={velocityDecay}
-          cooldownTicks={cooldownTicks}
-        />
-      </div>
-      <div
-        className={`absolute inset-0 ${renderMode === "3d" ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"} transition-opacity duration-150`}
-      >
-        <ForceGraph3D
-          ref={graph3DRef}
-          graphData={displayData}
-          numDimensions={3}
-          width={dimensions.width}
-          height={dimensions.height}
-          nodeLabel={node3DLabel}
-          nodeThreeObject={node3DObject}
-          linkColor={link3DColor}
-          linkWidth={link3DWidth}
-          onNodeClick={handleNodeClick}
-          onNodeDragEnd={handleNodeDragEnd}
-          onLinkClick={handleLinkClick}
-          onBackgroundClick={handleBackgroundClick}
-          onEngineTick={() => {
-            if (armed3DForKey !== threeDArmingKey) {
-              setArmed3DForKey(threeDArmingKey);
-            }
-            const now = performance.now();
-            if (now - last3DControlSyncAtRef.current > 140) {
-              last3DControlSyncAtRef.current = now;
-              sync3DControlsAndScene();
-            }
-          }}
-          onEngineStop={() => {
-            if (armed3DForKey !== threeDArmingKey) {
-              setArmed3DForKey(threeDArmingKey);
-            }
-            persistCurrent3DLayout();
-          }}
-          backgroundColor="rgba(0,0,0,0)"
-          d3AlphaDecay={alphaDecay}
-          d3VelocityDecay={velocityDecay}
-          cooldownTicks={effectiveCooldownTicks}
-        />
-      </div>
+      {renderMode === "2d" && (
+        <div className="absolute inset-0">
+          <ForceGraph2D
+            ref={graph2DRef}
+            graphData={displayData}
+            width={dimensions.width}
+            height={dimensions.height}
+            nodeCanvasObject={nodeCanvasObject}
+            nodePointerAreaPaint={nodePointerAreaPaint}
+            linkCanvasObject={linkCanvasObject}
+            onNodeClick={handleNodeClick}
+            onNodeDragEnd={handleNodeDragEnd}
+            onLinkClick={handleLinkClick}
+            onBackgroundClick={handleBackgroundClick}
+            backgroundColor="rgba(0,0,0,0)"
+            d3AlphaDecay={alphaDecay}
+            d3VelocityDecay={velocityDecay}
+            cooldownTicks={cooldownTicks}
+          />
+        </div>
+      )}
+      {renderMode === "3d" && (
+        <div className="absolute inset-0">
+          <ForceGraph3D
+            ref={graph3DRef}
+            graphData={displayData}
+            numDimensions={3}
+            width={dimensions.width}
+            height={dimensions.height}
+            nodeLabel={node3DLabel}
+            nodeThreeObject={node3DObject}
+            linkColor={link3DColor}
+            linkWidth={link3DWidth}
+            onNodeClick={handleNodeClick}
+            onNodeDragEnd={handleNodeDragEnd}
+            onLinkClick={handleLinkClick}
+            onBackgroundClick={handleBackgroundClick}
+            onEngineTick={() => {
+              if (armed3DForKey !== threeDArmingKey) {
+                setArmed3DForKey(threeDArmingKey);
+              }
+              const now = performance.now();
+              if (now - last3DControlSyncAtRef.current > 140) {
+                last3DControlSyncAtRef.current = now;
+                sync3DControlsAndScene();
+              }
+            }}
+            onEngineStop={() => {
+              if (armed3DForKey !== threeDArmingKey) {
+                setArmed3DForKey(threeDArmingKey);
+              }
+              persistCurrent3DLayout();
+            }}
+            backgroundColor="rgba(0,0,0,0)"
+            d3AlphaDecay={alphaDecay}
+            d3VelocityDecay={velocityDecay}
+            cooldownTicks={effectiveCooldownTicks}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -7,8 +7,20 @@ import {
   TopicEvidence,
 } from "@/lib/types";
 
+function formatDate(dateString: string | null | undefined): string | null {
+  if (!dateString) return null;
+  try {
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return null;
+    return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  } catch {
+    return null;
+  }
+}
+
 interface TopicDetailProps {
   name: string;
+  createdAt?: string | null;
   relatedTopics: string[];
   readOnly?: boolean;
   connectingFrom?: string | null;
@@ -160,6 +172,7 @@ const STAGE_ORDER: Record<LearningStage, number> = {
 
 export default function TopicDetail({
   name,
+  createdAt,
   relatedTopics,
   readOnly = false,
   connectingFrom,
@@ -404,9 +417,7 @@ export default function TopicDetail({
         <div className="min-w-0">
           <h3 className="text-lg font-semibold text-white">{name}</h3>
           <p className="text-xs text-gray-400 mt-0.5">
-            {readOnly
-              ? "Read-only topic view"
-              : "Topic actions and learning links"}
+            {formatDate(createdAt) ? `Added ${formatDate(createdAt)}` : readOnly ? "Read-only topic view" : "Topic actions and learning links"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -737,6 +748,7 @@ export default function TopicDetail({
                     <p className="text-xs text-gray-400">
                       {source.journal}
                       {source.year ? ` · ${source.year}` : ""}
+                      {formatDate(source.created_at) ? ` · Saved ${formatDate(source.created_at)}` : ""}
                     </p>
                     {source.authors.length > 0 && (
                       <p className="text-xs text-gray-500">

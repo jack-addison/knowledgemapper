@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import KnowledgeGraph from "@/components/Graph/KnowledgeGraph";
@@ -180,6 +180,20 @@ function buildLearningResources(topic: string): LearningResource[] {
 }
 
 export default function SharedMapPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-950 text-white p-6">
+          <p className="text-gray-400">Loading shared map...</p>
+        </div>
+      }
+    >
+      <SharedMapContent />
+    </Suspense>
+  );
+}
+
+function SharedMapContent() {
   const params = useParams<{ slug: string }>();
   const searchParams = useSearchParams();
   const slug = typeof params?.slug === "string" ? params.slug : "";
@@ -452,7 +466,7 @@ export default function SharedMapPage() {
       </header>
 
       <main className="px-4 py-3 max-w-[1800px] mx-auto">
-        <div className="relative">
+        <div className="relative" style={{ height: "calc(100vh - 120px)" }}>
           <KnowledgeGraph
             data={graphData}
             selectedNodeId={selectedTopicId}
