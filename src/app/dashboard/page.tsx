@@ -2987,6 +2987,7 @@ export default function DashboardPage() {
   const navLinks = [
     { href: "/dashboard", label: "Map" },
     { href: "/discover", label: "Discover" },
+    { href: "/atlas", label: "Atlas" },
     { href: "/profile", label: "Profile" },
     { href: "/about", label: "About" },
   ];
